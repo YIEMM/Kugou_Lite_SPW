@@ -8,6 +8,7 @@ import cn.spw.kugou.lite.diag.Diag
 import cn.spw.kugou.lite.host.PageInjection
 import cn.spw.kugou.lite.sidecar.ApiExec
 import cn.spw.kugou.lite.sidecar.AudioCache
+import cn.spw.kugou.lite.ui.CoverLoader
 import cn.spw.kugou.lite.sidecar.AuthStore
 import cn.spw.kugou.lite.sidecar.SidecarManager
 import cn.spw.kugou.lite.ui.PageNav
@@ -38,6 +39,7 @@ class KugouLitePlugin(pluginContext: PluginContext) : SpwPlugin(pluginContext) {
             AuthStore.configure(dir)
             // 音频下载缓存：宿主要用本地文件路径才能可靠播放（见 AudioCache 类文档）
             AudioCache.configure(dir)
+            CoverLoader.configure(dir)
             // 登录态不需要注入给边车：Rust 版是进程内服务，KugouApi 每次请求
             // 都从 AuthStore 读 token 并通过 Cookie 头传给本地服务（见 KugouApi.get）。
             Diag.info("在线能力已就绪：登录=${AuthStore.isLoggedIn}")

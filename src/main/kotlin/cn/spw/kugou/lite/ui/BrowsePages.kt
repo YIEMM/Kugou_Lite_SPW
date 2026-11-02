@@ -9,11 +9,22 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
+import androidx.compose.foundation.Image
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.layout.ContentScale
+import cn.spw.kugou.lite.host.TrackWatcher
 import cn.spw.kugou.lite.diag.Diag
 import cn.spw.kugou.lite.host.PlaybackBridge
 import cn.spw.kugou.lite.sidecar.ApiExec
 import cn.spw.kugou.lite.sidecar.Async
 import cn.spw.kugou.lite.sidecar.AudioCache
+import cn.spw.kugou.lite.sidecar.Id3CoverWriter
 import cn.spw.kugou.lite.sidecar.KugouApi
 import cn.spw.kugou.lite.sidecar.MutableAsyncState
 import cn.spw.kugou.lite.sidecar.Playlist
@@ -82,8 +93,8 @@ fun DailyPage() {
         emptyText = "今日暂无推荐",
         loginHint = "需要登录酷狗账号",
     ) { list ->
-        list.forEach { s ->
-            SongRow(song = s, onClick = { onSongPicked(s) })
+        list.forEachIndexed { index, s ->
+            SongRow(song = s, onClick = { onSongPicked(list, index) })
         }
     }
 }
@@ -111,29 +122,33 @@ fun SongListPage() {
         emptyText = "该列表暂无歌曲",
         loginHint = "需要登录酷狗账号",
     ) { list ->
-        list.forEach { s ->
-            SongRow(song = s, onClick = { onSongPicked(s) })
+        list.forEachIndexed { index, s ->
+            SongRow(song = s, onClick = { onSongPicked(list, index) })
         }
     }
 }
 
 /**
- * 点歌的统一入口。
+ * 点歌的统一入口（列表内点击）。
  *
  * 流程（全部在后台线程）：
  * ```
- * 取流 → 下载到本地缓存 → 用本地绝对路径入队播放
+ * 取流 → 下载到本地缓存 → 建立整条播放队列并从该首开始播
  * ```
  *
  * **为什么要先下载**：宿主对「曲库外的 HTTP 曲目」经常根本不打开
  * （见 [cn.spw.kugou.lite.host.PlaybackBridge] 的类文档），
  * 只有本地文件路径能保证真的出声。
  *
- * 失败时只写日志、不弹窗：宿主把插件组合期异常视为 `FATAL_FAILURE`，
- * 而播放失败属于常见情况（付费曲、未登录、接口失效），必须静默降级。
+ * **为什么要传整个列表**：单曲入队会让「下一首」失效（队列只有一首）。
+ * 这里把整个列表建进队列，宿主的切歌按钮才能真正工作。
+ *
+ * @param queue 当前列表的全部歌曲（用于建队列）
+ * @param index 被点击的曲目在列表中的下标
  */
-private fun onSongPicked(song: Song) {
-    Diag.info("[page] 点歌「${song.title}」- ${song.singer}")
+private fun onSongPicked(queue: List<Song>, index: Int) {
+    val song = queue.getOrNull(index) ?: return
+    Diag.info("[page] 点歌「${song.title}」- ${song.singer}（${index + 1}/${queue.size}）")
     ApiExec.run({ result ->
         result.onFailure { Diag.warn("[page] 播放流程异常：${it.message}") }
     }) {
@@ -147,33 +162,82 @@ private fun onSongPicked(song: Song) {
         if (local == null) {
             Diag.warn("[page] 本地缓存失败，回退 HTTP 直链")
         }
-        val ok = PlaybackBridge.play(song, stream, local)
-        if (!ok) Diag.warn("[page] 播放失败")
+        // 顺带把歌词写进音频文件的内嵌元数据
+        runCatching {
+            val lrc = KugouApi.lyricByHash(song.hash)
+            if (!lrc.isNullOrBlank() && local != null) {
+                Id3CoverWriter.writeLyrics(local, lrc)
+            }
+        }.onFailure { Diag.warn("[page] 写入内嵌歌词失败：${it.message}") }
+
+        val ok = PlaybackBridge.playQueue(queue, index, { s -> KugouApi.streamUrl(s) }, local)
+        if (!ok) {
+            // 队列建立失败时退回单曲播放，至少能出声
+            Diag.warn("[page] 建立队列失败，回退单曲播放")
+            PlaybackBridge.play(song, stream, local)
+        }
+        // 登记队列并启动切歌监听：宿主切到下一首时自动补音频源
+        TrackWatcher.updateQueue(queue)
+        TrackWatcher.start()
     }
 }
 
-/** 一行歌曲。点击回调由调用方决定用途。 */
+/**
+ * 一行歌曲：封面 + 歌名 + 歌手·时长。
+ *
+ * 封面来自酷狗 CDN（`trans_param.union_cover` 的 `{size}` 已替换成 120px），
+ * 由 [CoverLoader] 异步加载 + 两级缓存。加载中/失败时显示音符占位块，
+ * 保证行高稳定，不会因为图片加载而跳动。
+ */
 @Composable
 internal fun SongRow(song: Song, onClick: () -> Unit) {
-    Column(
+    Row(
         Modifier
             .fillMaxWidth()
             .clickable { onClick() }
-            .padding(horizontal = 16.dp, vertical = 10.dp),
+            .padding(horizontal = 16.dp, vertical = 8.dp),
+        verticalAlignment = Alignment.CenterVertically,
     ) {
-        Text3(text = song.title, color = Color(0xFFEDEDED))
-        val sub = buildString {
-            append(song.singer)
-            if (song.durationSec > 0) {
-                append(" · ")
-                append(song.durationText)
+        SongCover(song.coverUrl(120))
+        Column(Modifier.padding(start = 12.dp)) {
+            Text3(text = song.title, color = Color(0xFFEDEDED))
+            val sub = buildString {
+                append(song.singer)
+                if (song.durationSec > 0) {
+                    append(" · ")
+                    append(song.durationText)
+                }
             }
+            Text3(
+                text = sub,
+                color = Color(0xFF9A9A9A),
+                modifier = Modifier.padding(top = 2.dp),
+            )
         }
-        Text3(
-            text = sub,
-            color = Color(0xFF9A9A9A),
-            modifier = Modifier.padding(top = 2.dp),
-        )
+    }
+}
+
+/** 列表行的小封面（48dp 圆角方块），无图时显示音符占位。 */
+@Composable
+private fun SongCover(url: String?) {
+    val bitmap = rememberCover(url)
+    Box(
+        Modifier
+            .size(48.dp)
+            .background(Color(0xFF2E2E2E), RoundedCornerShape(6.dp)),
+        contentAlignment = Alignment.Center,
+    ) {
+        if (bitmap != null) {
+            Image(
+                bitmap = bitmap,
+                contentDescription = null,
+                contentScale = ContentScale.Crop,
+                modifier = Modifier.size(48.dp).clip(RoundedCornerShape(6.dp)),
+            )
+        } else {
+            // 占位音符：与播放栏的 ♪ 呼应，避免空白方块
+            Text3(text = "♪", color = Color(0xFF6E6E6E))
+        }
     }
 }
 

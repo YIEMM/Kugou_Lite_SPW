@@ -18,6 +18,7 @@ import cn.spw.kugou.lite.sidecar.ApiExec
 import cn.spw.kugou.lite.sidecar.Async
 import cn.spw.kugou.lite.sidecar.AudioCache
 import cn.spw.kugou.lite.sidecar.AuthStore
+import cn.spw.kugou.lite.sidecar.Id3CoverWriter
 import cn.spw.kugou.lite.sidecar.KugouApi
 import cn.spw.kugou.lite.sidecar.SidecarManager
 import cn.spw.kugou.lite.sidecar.rememberAsyncState
@@ -50,8 +51,8 @@ fun KugouLitePage() {
         KugouLiteTab.Home -> HomePage()
 
         KugouLiteTab.Search -> SubPage(title = "搜索", onBack = { PageNav.backHome() }) {
-            SearchPage(onPick = { song ->
-                Diag.info("[page] 搜索页点歌「${song.title}」- ${song.singer}")
+            SearchPage(onPick = { song, queue, index ->
+                Diag.info("[page] 搜索页点歌「${song.title}」- ${song.singer}（${index + 1}/${queue.size}）")
                 ApiExec.run({ r -> r.onFailure { Diag.warn("[page] 播放流程异常：${it.message}") } }) {
                     val stream = KugouApi.streamUrl(song)
                     if (stream == null) {
@@ -59,7 +60,17 @@ fun KugouLitePage() {
                     } else {
                         val local = AudioCache.ensureLocal(song, stream)
                         if (local == null) Diag.warn("[page] 本地缓存失败，回退 HTTP 直链")
-                        PlaybackBridge.play(song, stream, local)
+                        runCatching {
+                            val lrc = KugouApi.lyricByHash(song.hash)
+                            if (!lrc.isNullOrBlank() && local != null) {
+                                Id3CoverWriter.writeLyrics(local, lrc)
+                            }
+                        }
+                        val ok = PlaybackBridge.playQueue(queue, index, { s -> KugouApi.streamUrl(s) }, local)
+                        if (!ok) {
+                            Diag.warn("[page] 建立队列失败，回退单曲播放")
+                            PlaybackBridge.play(song, stream, local)
+                        }
                     }
                 }
             })

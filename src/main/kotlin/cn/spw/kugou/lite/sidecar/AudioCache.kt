@@ -82,6 +82,9 @@ object AudioCache {
                     }
                     if (target.isFile && target.length() > 0) {
                         Diag.info(TAG, "已缓存 ${target.name}（${target.length() / 1024} KB）")
+                        // 顺手补内嵌封面：宿主播放条/播放页的封面读的就是
+                        // 本地音频文件的内嵌图（TagParser.readImage）。
+                        embedCover(song, target)
                         target
                     } else {
                         null
@@ -96,6 +99,54 @@ object AudioCache {
         part.delete()
         Diag.warn(TAG, "全部地址下载失败")
         return null
+    }
+
+    /**
+     * 把封面写进音频文件的 ID3 APIC 帧。
+     *
+     * 失败不影响播放（只是没有封面），所以整体静默降级。
+     */
+    private fun embedCover(song: Song, audioFile: File) {
+        try {
+            // 只处理支持 ID3 的容器；flac 用 vorbis comment，暂不支持
+            val ext = audioFile.extension.lowercase()
+            if (ext != "mp3") return
+
+            val coverUrl = song.coverUrl(500) ?: return
+            val cacheDir = dir ?: return
+            val coverFile = File(cacheDir, "cover-${song.hash.ifBlank { song.albumAudioId }}.img")
+
+            val bytes = if (coverFile.isFile && coverFile.length() > 0) {
+                coverFile.readBytes()
+            } else {
+                downloadBytes(coverUrl)?.also { b ->
+                    runCatching { coverFile.writeBytes(b) }
+                }
+            } ?: return
+
+            Id3CoverWriter.writeCover(audioFile, bytes, Id3CoverWriter.detectMime(bytes))
+        } catch (e: Exception) {
+            Diag.warn(TAG, "内嵌封面失败（不影响播放）：${e.message}")
+        }
+    }
+
+    /** 下载到内存（封面通常几十 KB）。 */
+    private fun downloadBytes(url: String): ByteArray? {
+        var conn: HttpURLConnection? = null
+        return try {
+            conn = (URI(url).toURL().openConnection() as HttpURLConnection).apply {
+                connectTimeout = 8_000
+                readTimeout = 15_000
+                instanceFollowRedirects = true
+                setRequestProperty("User-Agent", "KugouLite-SPW")
+            }
+            if (conn.responseCode !in 200..299) return null
+            conn.inputStream.use { it.readBytes() }
+        } catch (e: Exception) {
+            null
+        } finally {
+            runCatching { conn?.disconnect() }
+        }
     }
 
     private fun download(url: String, target: File): Boolean {

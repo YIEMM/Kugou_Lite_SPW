@@ -190,6 +190,108 @@ object PlaybackBridge {
     }
 
     /**
+     * 播放整个列表（歌单 / 榜单 / 每日推荐）。
+     *
+     * ## 与单曲播放的区别
+     *
+     * 单曲用 `setPlaybackQueue(listOf(item), 0)` 建一条只有一首的队列；
+     * 这里把**整个列表**一次性建进队列，之后宿主自己的「下一首」就能工作。
+     *
+     * ## 音频源的现实约束
+     *
+     * 宿主的音频源是按 trackId 登记的（`setPlaybackAudioSource`），
+     * 一次只能指向一个地址。所以：
+     * - **当前这首**用本地文件（保证立即出声）
+     * - **其余曲目**先把 path 写成 HTTP 直链，切歌时由
+     *   [cn.spw.kugou.lite.ui] 侧的「切歌监听」再补登记本地文件
+     *
+     * 这样队列是完整的、可翻页的，而不是「只能播一首」。
+     *
+     * @param songs 整个列表
+     * @param startIndex 从第几首开始播
+     * @param localFile 已下载好的当前曲目（可为 null）
+     * @return 成功返回 true
+     */
+    fun playQueue(
+        songs: List<Song>,
+        startIndex: Int,
+        streamOf: (Song) -> StreamInfo?,
+        localFile: File?,
+    ): Boolean {
+        if (songs.isEmpty()) return false
+        val idx = startIndex.coerceIn(0, songs.lastIndex)
+        val ctrl = ensureController() ?: return false
+        return try {
+            // 为每首歌构造 MediaItem。只有起始曲目拿得到已下载的本地文件，
+            // 其余用 HTTP 直链占位（切歌时再补）。
+            val items = songs.mapIndexed { i, s ->
+                val trackId = buildTrackId(s)
+                val path = if (i == idx && localFile != null) {
+                    localFile.absolutePath
+                } else {
+                    // 队列里的其他曲目：先放一个稳定的占位 path。
+                    // 真正播放时由切歌监听替换成本地文件。
+                    ""
+                }
+                newMediaItem(s, trackId, path)
+            }.filterNotNull()
+
+            if (items.isEmpty()) return false
+
+            runCatching { pauseMethod?.invoke(ctrl) }
+
+            // 一次性建整条队列
+            setQueueList?.invoke(ctrl, items, idx)
+
+            // 更新当前项的 path 为本地文件
+            val current = items.getOrNull(idx) ?: return false
+            updateMediaItemsMethod?.let { m ->
+                val paramType = m.parameterTypes[0]
+                val arr = java.lang.reflect.Array.newInstance(paramType.componentType, 1)
+                java.lang.reflect.Array.set(arr, 0, current)
+                m.invoke(ctrl, arr)
+            }
+
+            val song = songs[idx]
+            val trackId = buildTrackId(song)
+            val path = localFile?.absolutePath ?: streamOf(song)?.url ?: return false
+            setAudioSourceMethod?.invoke(ctrl, trackId, path, 0L, true)
+
+            prepareMethod?.invoke(ctrl)
+            playMethod?.invoke(ctrl)
+
+            Diag.info(TAG, "已建立播放队列：${items.size} 首，从第 ${idx + 1} 首「${song.title}」开始")
+            true
+        } catch (t: Throwable) {
+            val cause = (t as? InvocationTargetException)?.targetException ?: t
+            Diag.warn(TAG, "建立播放队列失败：${cause.javaClass.simpleName}: ${cause.message}")
+            false
+        }
+    }
+
+    /**
+     * 切歌后重新登记音频源。
+     *
+     * 宿主切到队列里的下一首时，那首的 path 还是空占位，需要在这里
+     * 取流 + 下载 + 重新登记。由 UI 侧在检测到曲目变化时调用。
+     */
+    fun rebindCurrent(song: Song, stream: StreamInfo, localFile: File?): Boolean {
+        val ctrl = controller ?: ensureController() ?: return false
+        val trackId = buildTrackId(song)
+        val path = localFile?.absolutePath ?: stream.url
+        return try {
+            setAudioSourceMethod?.invoke(ctrl, trackId, path, 0L, true)
+            prepareMethod?.invoke(ctrl)
+            playMethod?.invoke(ctrl)
+            Diag.info(TAG, "已重新绑定音频源「${song.title}」")
+            true
+        } catch (t: Throwable) {
+            Diag.warn(TAG, "重新绑定失败：${t.javaClass.simpleName}")
+            false
+        }
+    }
+
+    /**
      * 生成稳定的曲目 id。
      *
      * 网易云插件用 `netease-<数字 id>` 这种带前缀的形式，宿主内部似乎会按 id
@@ -349,7 +451,7 @@ object PlaybackBridge {
             song.singer,                // 3 歌手（UI 显示副标题用这里）
             song.albumName ?: "",       // 4 专辑
             song.singer,                // 5 专辑艺术家
-            path,                       // 6 path ← 音频地址
+            path,                       // 6 path ← 音频地址（队列里可为空，切歌时补）
         )
     }
 }

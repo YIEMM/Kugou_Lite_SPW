@@ -67,7 +67,13 @@ spmod {
     PluginVersion = version.toString()
     PluginProvider = "spw-kugou-lite"
     PluginHasConfig = true
-    PluginPermissions = listOf(PluginPermission.CLASS_TRANSFORM)
+    // CLASS_TRANSFORM：页面注入必需
+    // LIBRARY_READ：切歌监听要读「当前播放曲目」（WorkshopApi.playback()
+    //                .getCurrentMediaItem()），缺它抛 PluginPermissionDeniedException
+    PluginPermissions = listOf(
+        PluginPermission.CLASS_TRANSFORM,
+        PluginPermission.LIBRARY_READ,
+    )
     PluginOpenSourceUrl = "https://github.com/"
 }
 

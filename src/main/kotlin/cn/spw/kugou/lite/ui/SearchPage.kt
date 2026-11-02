@@ -24,6 +24,12 @@ import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.ExperimentalComposeUiApi
+import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.input.key.key
+import androidx.compose.ui.input.key.onPreviewKeyEvent
+import androidx.compose.ui.input.key.type
 import cn.spw.kugou.lite.sidecar.ApiExec
 import cn.spw.kugou.lite.sidecar.Async
 import cn.spw.kugou.lite.sidecar.KugouApi
@@ -48,7 +54,7 @@ import cn.spw.kugou.lite.sidecar.rememberAsyncState
  * （它有 2 分钟缓存和频率限制），也会让 UI 抖动。
  */
 @Composable
-fun SearchPage(onPick: (Song) -> Unit) {
+fun SearchPage(onPick: (Song, List<Song>, Int) -> Unit) {
     var keyword by remember { mutableStateOf("") }
     val state = rememberAsyncState<SearchResult?>()
 
@@ -85,8 +91,9 @@ fun SearchPage(onPick: (Song) -> Unit) {
                     SaltGroupTitle("找到 ${result.total} 首")
                     SaltCard(Modifier.fillMaxWidth().padding(horizontal = 16.dp)) {
                         LazyColumn(Modifier.fillMaxWidth().height(360.dp)) {
-                            items(result.songs) { song ->
-                                SongRow(song = song, onClick = { onPick(song) })
+                            items(result.songs.size) { index ->
+                                val song = result.songs[index]
+                                SongRow(song = song, onClick = { onPick(song, result.songs, index) })
                             }
                         }
                     }
@@ -96,7 +103,18 @@ fun SearchPage(onPick: (Song) -> Unit) {
     }
 }
 
-/** 自绘搜索框。 */
+/**
+ * 自绘搜索框（支持回车提交）。
+ *
+ * ## 回车提交的实现
+ *
+ * 用 `Modifier.onPreviewKeyEvent` 拦 `Key.Enter`。选 `onPreviewKeyEvent`
+ * 而不是 `onKeyEvent`：BasicTextField 内部会消费方向键/编辑键，
+ * 预览阶段拦截才能保证回车一定被我们拿到。
+ *
+ * 同时保留右侧「搜索」按钮点击，两种方式都能触发。
+ */
+@OptIn(ExperimentalComposeUiApi::class)
 @Composable
 private fun SearchBox(
     value: String,
@@ -118,7 +136,18 @@ private fun SearchBox(
             singleLine = true,
             textStyle = TextStyle(color = Color(0xFFEDEDED), fontSize = 14.sp),
             cursorBrush = SolidColor(Color(0xFF4CC2FF)),
-            modifier = Modifier.weight(1f),
+            modifier = Modifier
+                .weight(1f)
+                .onPreviewKeyEvent { event ->
+                    if (event.type == KeyEventType.KeyDown &&
+                        (event.key == Key.Enter || event.key == Key.NumPadEnter)
+                    ) {
+                        onSubmit()
+                        true
+                    } else {
+                        false
+                    }
+                },
         )
         Text3(
             text = "搜索",
