@@ -1,0 +1,25 @@
+{
+  "configs": [
+    {
+      "title": "Kugou Lite",
+      "summary": "酷狗曲库接入 Salt Player。",
+      "config": "config.json",
+      "preferences": [
+        {
+          "type": "button",
+          "title": "写入自检信息",
+          "summary": "把注入状态与原生组件解析结果写进诊断日志，反馈问题时附上",
+          "arrow_type": "none",
+          "on_click": "cn.spw.kugou.lite.PluginActions.writeSelfCheck"
+        },
+        {
+          "type": "button",
+          "title": "重新打开酷狗页面",
+          "summary": "置位页面状态并写日志；页面本体由宿主导航的配置页路由承载",
+          "arrow_type": "none",
+          "on_click": "cn.spw.kugou.lite.PluginActions.openPage"
+        }
+      ]
+    }
+  ]
+}

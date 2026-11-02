@@ -1,0 +1,38 @@
+# ---- Gradle ----
+.gradle/
+.gradle-home/
+build/
+!gradle/wrapper/gradle-wrapper.jar
+
+# ---- Kotlin ----
+.kotlin/
+
+# ---- Python ----
+__pycache__/
+*.py[cod]
+
+# ---- IDE ----
+.idea/
+*.iml
+*.iws
+*.ipr
+out/
+.fleet/
+
+# ---- 系统 ----
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ---- 本机密钥/配置 ----
+local.properties
+*.keystore
+*.jks
+
+# ---- 临时调试产物 ----
+# tools/probe* 的输出与截图不进版本库，脚本本身要进。
+# （build/ 已被整体忽略，这里再兜底一层。）
+probe-output/
+*.tmp
+*.bak
+*.bak-*

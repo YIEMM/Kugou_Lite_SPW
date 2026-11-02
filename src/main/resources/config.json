@@ -1,0 +1,10 @@
+{
+  "quality": "auto",
+  "backend": {
+    "port": 0,
+    "autoStart": true
+  },
+  "overlay": {
+    "openOnStartup": false
+  }
+}
