@@ -13,6 +13,7 @@ import cn.spw.kugou.lite.diag.Diag
 import cn.spw.kugou.lite.host.PlaybackBridge
 import cn.spw.kugou.lite.sidecar.ApiExec
 import cn.spw.kugou.lite.sidecar.Async
+import cn.spw.kugou.lite.sidecar.AudioCache
 import cn.spw.kugou.lite.sidecar.KugouApi
 import cn.spw.kugou.lite.sidecar.MutableAsyncState
 import cn.spw.kugou.lite.sidecar.Playlist
@@ -119,8 +120,14 @@ fun SongListPage() {
 /**
  * 点歌的统一入口。
  *
- * 流程：后台取流 → 拿到 CDN 直链 → 构造 `PiscesMediaItem` 推进宿主队列。
- * 全程在 [ApiExec] 的后台线程，不阻塞 UI。
+ * 流程（全部在后台线程）：
+ * ```
+ * 取流 → 下载到本地缓存 → 用本地绝对路径入队播放
+ * ```
+ *
+ * **为什么要先下载**：宿主对「曲库外的 HTTP 曲目」经常根本不打开
+ * （见 [cn.spw.kugou.lite.host.PlaybackBridge] 的类文档），
+ * 只有本地文件路径能保证真的出声。
  *
  * 失败时只写日志、不弹窗：宿主把插件组合期异常视为 `FATAL_FAILURE`，
  * 而播放失败属于常见情况（付费曲、未登录、接口失效），必须静默降级。
@@ -128,15 +135,20 @@ fun SongListPage() {
 private fun onSongPicked(song: Song) {
     Diag.info("[page] 点歌「${song.title}」- ${song.singer}")
     ApiExec.run({ result ->
-        result.onFailure { Diag.warn("[page] 取流异常：${it.message}") }
+        result.onFailure { Diag.warn("[page] 播放流程异常：${it.message}") }
     }) {
         val stream = KugouApi.streamUrl(song)
         if (stream == null) {
             Diag.warn("[page] 取流失败：${KugouApi.lastError ?: "未知原因"}")
-        } else {
-            val ok = PlaybackBridge.play(song, stream)
-            if (!ok) Diag.warn("[page] 入队失败")
+            return@run
         }
+        // 先落盘再用本地路径播放；下载失败时退回 HTTP 直链。
+        val local = AudioCache.ensureLocal(song, stream)
+        if (local == null) {
+            Diag.warn("[page] 本地缓存失败，回退 HTTP 直链")
+        }
+        val ok = PlaybackBridge.play(song, stream, local)
+        if (!ok) Diag.warn("[page] 播放失败")
     }
 }
 

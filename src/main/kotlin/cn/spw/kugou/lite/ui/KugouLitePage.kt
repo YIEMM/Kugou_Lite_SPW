@@ -16,6 +16,7 @@ import cn.spw.kugou.lite.diag.Diag
 import cn.spw.kugou.lite.host.PlaybackBridge
 import cn.spw.kugou.lite.sidecar.ApiExec
 import cn.spw.kugou.lite.sidecar.Async
+import cn.spw.kugou.lite.sidecar.AudioCache
 import cn.spw.kugou.lite.sidecar.AuthStore
 import cn.spw.kugou.lite.sidecar.KugouApi
 import cn.spw.kugou.lite.sidecar.SidecarManager
@@ -51,12 +52,14 @@ fun KugouLitePage() {
         KugouLiteTab.Search -> SubPage(title = "搜索", onBack = { PageNav.backHome() }) {
             SearchPage(onPick = { song ->
                 Diag.info("[page] 搜索页点歌「${song.title}」- ${song.singer}")
-                ApiExec.run({ r -> r.onFailure { Diag.warn("[page] 取流异常：${it.message}") } }) {
+                ApiExec.run({ r -> r.onFailure { Diag.warn("[page] 播放流程异常：${it.message}") } }) {
                     val stream = KugouApi.streamUrl(song)
                     if (stream == null) {
                         Diag.warn("[page] 取流失败：${KugouApi.lastError ?: "未知原因"}")
                     } else {
-                        PlaybackBridge.play(song, stream)
+                        val local = AudioCache.ensureLocal(song, stream)
+                        if (local == null) Diag.warn("[page] 本地缓存失败，回退 HTTP 直链")
+                        PlaybackBridge.play(song, stream, local)
                     }
                 }
             })

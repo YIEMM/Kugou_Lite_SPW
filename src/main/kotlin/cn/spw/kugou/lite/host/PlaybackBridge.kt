@@ -3,6 +3,7 @@ package cn.spw.kugou.lite.host
 import cn.spw.kugou.lite.diag.Diag
 import cn.spw.kugou.lite.sidecar.Song
 import cn.spw.kugou.lite.sidecar.StreamInfo
+import java.io.File
 import java.lang.reflect.InvocationTargetException
 
 /**
@@ -64,11 +65,26 @@ object PlaybackBridge {
     @Volatile
     private var mediaItemCtor: java.lang.reflect.Constructor<*>? = null
 
-    /** `setPlaybackQueue(List<PiscesMediaItem>, int)` —— 宿主实际用的重载。 */
+    /** `updateMediaItems(PiscesMediaItem...)` —— 把曲目信息同步进队列。 */
+    @Volatile
+    private var updateMediaItemsMethod: java.lang.reflect.Method? = null
+
+    /**
+     * `setPlaybackAudioSource(String trackId, String path, long position, boolean playWhenReady)`
+     * —— **切换音频源的正式入口**。
+     */
+    @Volatile
+    private var setAudioSourceMethod: java.lang.reflect.Method? = null
+
+    /** 兜底用：`setPlaybackQueue(List, int)`。 */
     @Volatile
     private var setQueueList: java.lang.reflect.Method? = null
 
-    /** `prepare()` —— 必须在 play() 之前调用，否则没有音频源。 */
+    /** `pause()` —— 停旧音频，**不要**用 releaseAudioEngine()（会让下次静音）。 */
+    @Volatile
+    private var pauseMethod: java.lang.reflect.Method? = null
+
+    /** `prepare()` —— 必须在 play() 之前调用。 */
     @Volatile
     private var prepareMethod: java.lang.reflect.Method? = null
 
@@ -79,45 +95,110 @@ object PlaybackBridge {
     /**
      * 播放一首歌。
      *
+     * ## 关键：宿主对「曲库外的 HTTP 曲目」经常**根本不去打开**
+     *
+     * 这来自 SPW_connect_Moe 网易云插件的实证注释：
+     *
+     * > Detects a selected HTTP item that the host never opens.
+     * > **Position/Ready are not audio evidence.**
+     *
+     * 也就是说：
+     * - 播放栏显示歌名 ✅
+     * - 播控按钮出现 ✅
+     * - SMTC 有曲目信息 ✅
+     * - 但 `STATUS=Stopped`，宿主从未发起取流 ❌
+     *
+     * 这三项「看起来在播」的信号**都不能证明真的在播**。唯一可信的证据是
+     * 「宿主有没有向音频地址发 HTTP 请求」。
+     *
+     * ## 所以走本地文件
+     *
+     * 网易云插件的做法是：HTTP 直链入队 → 等一段时间 → 若宿主没来拉流，
+     * 就把音频**完整下载成临时文件**，用本地绝对路径重新入队。本地文件路径
+     * 是宿主最成熟的播放通路，不依赖任何外部音源机制。
+     *
+     * 本实现直接采用后者（少一次失败的等待）：
+     *
+     * ```
+     * 1. 下载音频到 <插件数据目录>/audio-cache/<id>.mp3
+     * 2. 用本地绝对路径构造 PiscesMediaItem
+     * 3. updateMediaItems → setPlaybackAudioSource → prepare → play
+     * ```
+     *
      * @param stream 已取到的播放信息（含 CDN 直链）
-     * @return 成功入队并开始播放返回 true；任一环节失败返回 false 并写诊断日志。
+     * @param localFile 已下载到本地的音频文件；取流成功后由调用方准备
+     * @return 成功返回 true；失败返回 false 并写诊断日志。
      */
-    fun play(song: Song, stream: StreamInfo): Boolean {
+    fun play(song: Song, stream: StreamInfo, localFile: File?): Boolean {
         return try {
             val ctrl = ensureController() ?: return false
-            val trackId = song.hash.ifBlank { song.albumAudioId }
-            val item = newMediaItem(song, trackId, stream.url) ?: return false
+            val trackId = buildTrackId(song)
 
-            // **关键**：先向 MusicVideoAudioSourceRegistry 登记「这条 trackId 的
-            // 音频来源是 stream.url」，否则宿主会拿 trackId 去自己的曲库里找，
-            // 找不到就弹「未载入歌曲，请选择一首歌曲播放」——真机踩过。
-            //
-            // 逆向依据：MusicVideoAudioSourceRegistry.matches(PiscesMediaItem)
-            // 同时比对 Source.trackId==item 的 id 字段、Source.location==item 的
-            // uri 字段，两者都相等才认定「这条外部音频源适用」。
-            activateSource(trackId, stream.url)
+            // 优先用本地文件：宿主对本地路径的播放通路最可靠。
+            val path = localFile?.absolutePath ?: stream.url
+            val usingLocal = localFile != null && localFile.isFile && localFile.length() > 0
 
-            // **调用顺序必须与宿主一致**（实测 androidx/compose/ui/U+05D4 的
-            // 字节码）：
-            //
-            //   setPlaybackQueue(List, int) → prepare() → play()
-            //
-            // 早期实现只用单曲重载且**漏了 prepare()**，宿主因此没有音频源，
-            // 表现为播放栏显示歌名但弹出「未载入歌曲，请选择一首歌曲播放」，
-            // 且播控按钮消失。
-            val setQueue = setQueueList ?: return false
-            setQueue.invoke(ctrl, listOf(item), 0)
+            val item = newMediaItem(song, trackId, path) ?: return false
 
+            // 1) 先停旧音频（不要用 releaseAudioEngine，会让下次静音）
+            runCatching { pauseMethod?.invoke(ctrl) }
+
+            // 2) **先建队列**，再更新项。
+            //
+            // 网易云插件的 LocalPlaybackBridge 注释写着
+            // 「Uses the host's queued UpdateMediaItems command:
+            //   **no queue replacement** or database writes」——
+            // 意思是 `updateMediaItems` 只**更新已有队列项**，它自己不会建队列。
+            //
+            // 早期实现跳过建队列直接 updateMediaItems，结果队列里没有这一项，
+            // 更新静默无效：播放栏和 SMTC 一直显示上一次的曲目（实测
+            // ARTIST 停在旧的 trackId、ALBUM 停在旧 URL），状态 Stopped。
+            setQueueList?.invoke(ctrl, listOf(item), 0)
+
+            // 3) 曲目信息同步进队列（变长参数，反射要传该参数类型的数组）
+            updateMediaItemsMethod?.let { m ->
+                val paramType = m.parameterTypes[0]
+                val arr = java.lang.reflect.Array.newInstance(paramType.componentType, 1)
+                java.lang.reflect.Array.set(arr, 0, item)
+                m.invoke(ctrl, arr)
+            }
+
+            // 4) 切换音频源
+            val ok = if (setAudioSourceMethod != null) {
+                setAudioSourceMethod!!.invoke(ctrl, trackId, path, 0L, true)
+                true
+            } else {
+                false
+            }
+
+            // 5) 准备并播放
             prepareMethod?.invoke(ctrl)
             playMethod?.invoke(ctrl)
 
-            Diag.info(TAG, "已入队播放「${song.title}」${stream.qualityText}（${stream.bitRate / 1000}kbps）")
+            Diag.info(
+                TAG,
+                "已播放「${song.title}」${if (usingLocal) "本地文件" else "HTTP 直链"}" +
+                    " ${stream.qualityText}（${stream.bitRate / 1000}kbps）" +
+                    if (ok) "" else "［降级：无 setPlaybackAudioSource］",
+            )
             true
         } catch (t: Throwable) {
             val cause = (t as? InvocationTargetException)?.targetException ?: t
             Diag.warn(TAG, "播放失败：${cause.javaClass.simpleName}: ${cause.message}")
             false
         }
+    }
+
+    /**
+     * 生成稳定的曲目 id。
+     *
+     * 网易云插件用 `netease-<数字 id>` 这种带前缀的形式，宿主内部似乎会按 id
+     * 判断曲目归属。这里用 `kugou-<hash 或 albumAudioId>` 保持同样风格。
+     * 前缀还能避免与宿主本地曲库的 id 撞车。
+     */
+    private fun buildTrackId(song: Song): String {
+        val raw = song.hash.ifBlank { song.albumAudioId }
+        return "kugou-$raw"
     }
 
     /**
@@ -144,6 +225,7 @@ object PlaybackBridge {
                 return
             }
             activate.invoke(registry, trackId, location)
+            Diag.info(TAG, "已登记音频源 trackId=${trackId.take(16)}… location=${location.take(48)}…")
         } catch (t: Throwable) {
             val cause = (t as? InvocationTargetException)?.targetException ?: t
             Diag.warn(TAG, "登记音频源失败（不影响本地曲库播放）：${cause.javaClass.simpleName}")
@@ -177,12 +259,22 @@ object PlaybackBridge {
         val queueList = ctrl.javaClass.methods.firstOrNull {
             it.name == "setPlaybackQueue" && it.parameterCount == 2
         }
-        if (queueList == null) {
-            Diag.warn(TAG, "PlaybackController 上找不到 setPlaybackQueue(List, int)")
-            return null
-        }
-        queueList.isAccessible = true
+        queueList?.isAccessible = true
 
+        val updateItems = ctrl.javaClass.methods.firstOrNull {
+            it.name == "updateMediaItems" && it.parameterCount == 1 &&
+                it.parameterTypes[0].isArray
+        }
+        updateItems?.isAccessible = true
+
+        val setSource = ctrl.javaClass.methods.firstOrNull {
+            it.name == "setPlaybackAudioSource" && it.parameterCount == 4
+        }
+        setSource?.isAccessible = true
+
+        val pause = ctrl.javaClass.methods.firstOrNull {
+            it.name == "pause" && it.parameterCount == 0
+        }
         val prepare = ctrl.javaClass.methods.firstOrNull {
             it.name == "prepare" && it.parameterCount == 0
         }
@@ -193,18 +285,48 @@ object PlaybackBridge {
             Diag.warn(TAG, "PlaybackController 上找不到 prepare()/play()")
             return null
         }
+        pause?.isAccessible = true
         prepare.isAccessible = true
         play.isAccessible = true
 
+        updateMediaItemsMethod = updateItems
+        setAudioSourceMethod = setSource
         setQueueList = queueList
+        pauseMethod = pause
         prepareMethod = prepare
         playMethod = play
         controller = ctrl
-        Diag.info(TAG, "已解析播放控制器（setPlaybackQueue(List,int) → prepare() → play()）")
+
+        Diag.info(
+            TAG,
+            "已解析播放控制器：setPlaybackAudioSource=${setSource != null} " +
+                "updateMediaItems=${updateItems != null} pause=${pause != null}",
+        )
         return ctrl
     }
 
-    private fun newMediaItem(song: Song, trackId: String, uri: String): Any? {
+    /**
+     * 构造 `PiscesMediaItem`。
+     *
+     * ## 六个参数的语义（从常量池里的 toString 模板确认）
+     *
+     * ```
+     * PiscesMediaItem(id='.', title='.', artist='.', album='.', albumArtist='.', path='.')
+     * ```
+     *
+     * 六个字段依次是：**id / title / artist / album / albumArtist / path**。
+     * 第 6 位 `path` 放音频地址。
+     *
+     * ## 为什么 artist 槽位传歌手而不是 trackId
+     *
+     * 早期为了迎合 `MusicVideoAudioSourceRegistry.matches` 的比对位置，
+     * 曾把 trackId 塞进 artist 槽，结果播放栏副标题直接显示出 `967249675`
+     * 这种内部 id —— UI 读的就是 artist 位。
+     *
+     * 现在的正确路径是 `setPlaybackAudioSource(trackId, path, ...)`，
+     * trackId 通过**参数**单独传给宿主，不需要污染 artist 字段。
+     */
+    private fun newMediaItem(song: Song, trackId: String, path: String): Any? {
         val ctor = mediaItemCtor ?: run {
             val c = try {
                 Class.forName(MEDIA_ITEM_CLASS, true, javaClass.classLoader)
@@ -221,14 +343,13 @@ object PlaybackBridge {
             c
         }
 
-        // 参数顺序见类文档：id / title / artist / album / albumArtist / uri
         return ctor.newInstance(
-            trackId,
-            song.title,
-            song.singer,
-            song.albumName ?: "",
-            song.singer,
-            uri,
+            trackId,                    // 1 id
+            song.title,                 // 2 标题
+            song.singer,                // 3 歌手（UI 显示副标题用这里）
+            song.albumName ?: "",       // 4 专辑
+            song.singer,                // 5 专辑艺术家
+            path,                       // 6 path ← 音频地址
         )
     }
 }
