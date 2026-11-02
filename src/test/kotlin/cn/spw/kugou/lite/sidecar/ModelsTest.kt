@@ -44,6 +44,15 @@ class ModelsTest {
     }
 
     @Test
+    fun `异常大的时长不渲染荒谬值`() {
+        // 真机踩坑：某接口 timelen 单位是毫秒（270027），按秒算会得到 4500:27
+        assertEquals("--:--", song(durationSec = 270_027).durationText)
+        assertEquals("--:--", song(durationSec = 86_401).durationText)
+        // 24 小时整仍可渲染
+        assertEquals("1440:00", song(durationSec = 86_400).durationText)
+    }
+
+    @Test
     fun `封面模板替换 size 占位符`() {
         val s = song(imageUrl = "http://imge.kugou.com/stdmusic/{size}/cover.jpg")
         assertEquals("http://imge.kugou.com/stdmusic/240/cover.jpg", s.coverUrl(240))

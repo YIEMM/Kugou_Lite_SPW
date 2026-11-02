@@ -175,29 +175,82 @@ object KugouApi {
 
     // ---------------------------------------------------------------- 歌单 / 榜单 / 推荐
 
+    /**
+     * 我的歌单列表。
+     *
+     * ## 字段名（实测 `/user/playlist` 的 `data.info[]`）
+     *
+     * ```
+     * listid = 1              ← 歌单 id（不是 specialid）
+     * name   = 默认收藏        ← 名称（不是 specialname）
+     * count  = 5              ← **曲目数（不是 songcount）**
+     * m_count= 5              ← 曲目数副本
+     * pic    = http://...     ← 封面（不是 img）
+     * intro  = ""             ← 简介
+     * ```
+     *
+     * 早期实现读 `songcount` / `specialid` / `specialname` / `img`，
+     * 这些都是**另一个接口**（`/user/playlist` 的旧版或移动端变体）的字段名，
+     * 在这个接口里全都不存在 —— 结果歌单能列出来但曲目数恒为 0。
+     * 现在每个字段都用 [firstString] / [firstInt] 按优先级探测，两种命名都兼容。
+     */
     fun userPlaylists(): List<Playlist> {
         val json = get("/user/playlist", emptyMap()) ?: return emptyList()
         val info = JsonLite.dig(json, "data", "info")
-        return JsonLite.asArray(info).orEmpty().mapNotNull { item ->
+        val list = JsonLite.asArray(info).orEmpty().mapNotNull { item ->
             val obj = JsonLite.asObject(item) ?: return@mapNotNull null
+            // **必须优先取 global_collection_id**：歌单内的歌曲接口
+            // （`/playlist/track/all`）只认它，传 listid 会返回空。
+            val id = firstString(obj, "global_collection_id", "specialid", "listid", "listId")
+                ?: return@mapNotNull null
             Playlist(
-                id = JsonLite.asString(obj["specialid"]) ?: JsonLite.asString(obj["listid"]) ?: return@mapNotNull null,
-                name = JsonLite.asString(obj["specialname"]) ?: JsonLite.asString(obj["name"]) ?: "未命名歌单",
-                coverUrl = JsonLite.asString(obj["img"]) ?: JsonLite.asString(obj["pic"]),
-                songCount = JsonLite.asInt(obj["songcount"]),
-                playCount = JsonLite.asLong(obj["playcount"]),
-                description = JsonLite.asString(obj["intro"]),
+                id = id,
+                name = firstString(obj, "specialname", "name", "listname") ?: "未命名歌单",
+                coverUrl = firstString(obj, "img", "pic", "cover"),
+                // 曲目数：count / m_count 是本接口的字段；songcount 是旧版字段，留着兜底
+                songCount = firstInt(obj, "count", "m_count", "songcount", "song_count"),
+                playCount = firstLong(obj, "playcount", "play_count"),
+                description = firstString(obj, "intro", "description"),
             )
         }
+        Diag.info(TAG, "我的歌单 → ${list.size} 个")
+        return list
     }
 
-    fun playlistSongs(playlistId: String, page: Int = 1, pageSize: Int = 50): List<Song> {
+    /**
+     * 歌单内的歌曲。
+     *
+     * ## 参数：必须传 `global_collection_id`，不能用 listid
+     *
+     * `/user/playlist` 返回的 `listid`（如 `1`）**不能**直接用于本接口 ——
+     * 实测传 `listid=1` 返回 `status:0`（无数据）。必须用
+     * `global_collection_id`（形如 `collection_3_1072630322_1_0`）。
+     *
+     * ## 返回结构
+     *
+     * `data.songs[]`，每项字段：`hash` / `name` / `audio_id` / `album_id` /
+     * `add_mixsongid` / `size` / `extname` / `mvhash` 等。
+     * 注意歌名是 **`name`**，不是 `songname` 也不是 `filename` ——
+     * [parseSong] 已覆盖。
+     */
+    fun playlistSongs(globalCollectionId: String, page: Int = 1, pageSize: Int = 50): List<Song> {
+        if (globalCollectionId.isBlank()) return emptyList()
         val json = get(
             "/playlist/track/all",
-            mapOf("id" to playlistId, "page" to page.toString(), "pagesize" to pageSize.toString()),
+            mapOf(
+                "id" to globalCollectionId,
+                "page" to page.toString(),
+                "pagesize" to pageSize.toString(),
+            ),
         ) ?: return emptyList()
-        val songs = JsonLite.dig(json, "data", "songs")
-        return JsonLite.asArray(songs).orEmpty().mapNotNull { parseSong(it) }
+
+        val list = JsonLite.asArray(JsonLite.dig(json, "data", "songs"))
+            ?: JsonLite.asArray(JsonLite.dig(json, "data", "info"))
+            ?: return emptyList()
+
+        val songs = list.mapNotNull { parseSong(it) }
+        Diag.info(TAG, "歌单 $globalCollectionId → ${songs.size} 首")
+        return songs
     }
 
     /**
@@ -356,11 +409,28 @@ object KugouApi {
         // 两个取流键都没有 => 这首歌点不了，不要放进列表。
         if (hash.isBlank() && albumAudioId.isBlank()) return null
 
-        val fileName = firstString(obj, "FileName", "filename", "ori_audio_name", "OriSongName")
+        val rawName = firstString(obj, "FileName", "filename", "ori_audio_name", "OriSongName", "name")
             ?: "未知曲目"
 
+        // 歌名字段因接口而异：
+        //   /search             OriSongName（纯歌名）
+        //   /everyday/recommend songname（纯歌名）
+        //   /playlist/track/all **name**，格式是「歌手 - 歌名」
+        //
+        // 所以对 name 这种复合格式，要拆出歌名部分；同时下面 singer 也会
+        // 从 name 里拆 —— 歌单接口**没有单独的歌手字段**。
+        val composite = firstString(obj, "name")?.takeIf { it.contains(" - ") }
+
         val title = firstString(obj, "OriSongName", "songname", "SongName", "official_songname")
-            ?: fileName.substringAfter(" - ", fileName)
+            ?: composite?.substringAfter(" - ")?.trim()?.takeIf { it.isNotBlank() }
+            ?: rawName
+
+        val fileName = if (rawName == title && composite == null) {
+            // 没有「歌手 - 歌名」结构时，用 title 兜底
+            title
+        } else {
+            rawName
+        }
 
         val singer = firstString(obj, "SingerName", "singername", "singer_name", "author_name")
             ?: JsonLite.asArray(obj["Singers"]).orEmpty()
@@ -371,6 +441,8 @@ object KugouApi {
                         .mapNotNull { JsonLite.asString(JsonLite.asObject(it)?.get("author_name")) }
                         .joinToString("、")
                 }
+                // 歌单接口：从「歌手 - 歌名」里拆歌手
+                .ifBlank { composite?.substringBefore(" - ")?.trim().orEmpty() }
                 .ifBlank { "未知歌手" }
 
         return Song(
@@ -378,14 +450,34 @@ object KugouApi {
             title = title,
             singer = singer,
             hash = hash,
-            durationSec = firstInt(obj, "Duration", "timelen", "timeLength", "duration"),
+            durationSec = parseDurationSec(obj),
             imageUrl = firstString(obj, "Image", "img", "album_image", "transparent_url")
                 ?: JsonLite.asString(JsonLite.dig(obj["trans_param"], "union_cover")),
-            fileSize = firstLong(obj, "FileSize", "filesize", "file_size"),
+            fileSize = firstLong(obj, "FileSize", "filesize", "file_size", "size"),
             payType = firstInt(obj, "PayType", "pay_type"),
             albumName = firstString(obj, "AlbumName", "album_name", "remark"),
             albumAudioId = albumAudioId,
         )
+    }
+
+    /**
+     * 解析时长，统一成**秒**。
+     *
+     * ## 单位不一致（实测）
+     *
+     * | 接口 | 字段 | 单位 |
+     * |---|---|---|
+     * | `/search` | `Duration` | 秒（299） |
+     * | `/playlist/track/all` | `timelen` | **毫秒**（270027） |
+     *
+     * 早期一律当秒处理，歌单里就出现 `4500:27` 这种荒谬时长。
+     * 这里按数值量级判断：大于 100000 视为毫秒（100000 秒 ≈ 27 小时，
+     * 正常歌曲不可能这么长）。
+     */
+    private fun parseDurationSec(obj: Map<String, Any?>): Int {
+        val raw = firstInt(obj, "Duration", "duration", "timelen", "timeLength")
+        if (raw <= 0) return 0
+        return if (raw > 100_000) raw / 1000 else raw
     }
 
     /** 按顺序取第一个非空字符串字段。 */

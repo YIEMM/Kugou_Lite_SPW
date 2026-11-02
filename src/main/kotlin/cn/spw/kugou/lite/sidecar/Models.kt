@@ -46,10 +46,17 @@ data class Song(
      */
     val albumAudioId: String = "",
 ) {
-    /** 时长格式化为 `m:ss`。 */
+    /**
+     * 时长格式化为 `m:ss`。
+     *
+     * 超过 24 小时（86400 秒）视为脏数据，直接显示 `--:--` ——
+     * 真机上曾出现 `4500:27` 这种值，根因是某接口的时长单位是毫秒
+     * （已在 [KugouApi.parseDurationSec] 统一归一化）。这里再加一道防线，
+     * 保证 UI 永远不会渲染出荒谬的时长。
+     */
     val durationText: String
         get() {
-            if (durationSec <= 0) return "--:--"
+            if (durationSec <= 0 || durationSec > 86_400) return "--:--"
             val m = durationSec / 60
             val s = durationSec % 60
             return "%d:%02d".format(m, s)
