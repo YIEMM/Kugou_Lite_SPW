@@ -53,15 +53,28 @@ object PlaybackBridge {
 
     private const val CONTROLLER_CLASS = "com.xuncorp.voxzen.service.PlaybackController"
     private const val MEDIA_ITEM_CLASS = "com.xuncorp.pisces.PiscesMediaItem"
+    private const val SOURCE_REGISTRY_CLASS = "com.xuncorp.voxzen.cast.MusicVideoAudioSourceRegistry"
 
     @Volatile
     private var controller: Any? = null
 
     @Volatile
-    private var mediaItemCtor: java.lang.reflect.Constructor<*>? = null
+    private var sourceRegistry: Any? = null
 
     @Volatile
-    private var setQueueSingle: java.lang.reflect.Method? = null
+    private var mediaItemCtor: java.lang.reflect.Constructor<*>? = null
+
+    /** `setPlaybackQueue(List<PiscesMediaItem>, int)` —— 宿主实际用的重载。 */
+    @Volatile
+    private var setQueueList: java.lang.reflect.Method? = null
+
+    /** `prepare()` —— 必须在 play() 之前调用，否则没有音频源。 */
+    @Volatile
+    private var prepareMethod: java.lang.reflect.Method? = null
+
+    /** `play()`。 */
+    @Volatile
+    private var playMethod: java.lang.reflect.Method? = null
 
     /**
      * 播放一首歌。
@@ -72,22 +85,77 @@ object PlaybackBridge {
     fun play(song: Song, stream: StreamInfo): Boolean {
         return try {
             val ctrl = ensureController() ?: return false
-            val item = newMediaItem(song, stream) ?: return false
-            val method = setQueueSingle ?: return false
+            val trackId = song.hash.ifBlank { song.albumAudioId }
+            val item = newMediaItem(song, trackId, stream.url) ?: return false
 
-            method.invoke(ctrl, item)
-            // 有些状态下 setPlaybackQueue 只入队不自动播，这里显式触发一次。
-            runCatching {
-                ctrl.javaClass.methods
-                    .firstOrNull { it.name == "play" && it.parameterCount == 0 }
-                    ?.invoke(ctrl)
-            }
+            // **关键**：先向 MusicVideoAudioSourceRegistry 登记「这条 trackId 的
+            // 音频来源是 stream.url」，否则宿主会拿 trackId 去自己的曲库里找，
+            // 找不到就弹「未载入歌曲，请选择一首歌曲播放」——真机踩过。
+            //
+            // 逆向依据：MusicVideoAudioSourceRegistry.matches(PiscesMediaItem)
+            // 同时比对 Source.trackId==item 的 id 字段、Source.location==item 的
+            // uri 字段，两者都相等才认定「这条外部音频源适用」。
+            activateSource(trackId, stream.url)
+
+            // **调用顺序必须与宿主一致**（实测 androidx/compose/ui/U+05D4 的
+            // 字节码）：
+            //
+            //   setPlaybackQueue(List, int) → prepare() → play()
+            //
+            // 早期实现只用单曲重载且**漏了 prepare()**，宿主因此没有音频源，
+            // 表现为播放栏显示歌名但弹出「未载入歌曲，请选择一首歌曲播放」，
+            // 且播控按钮消失。
+            val setQueue = setQueueList ?: return false
+            setQueue.invoke(ctrl, listOf(item), 0)
+
+            prepareMethod?.invoke(ctrl)
+            playMethod?.invoke(ctrl)
+
             Diag.info(TAG, "已入队播放「${song.title}」${stream.qualityText}（${stream.bitRate / 1000}kbps）")
             true
         } catch (t: Throwable) {
             val cause = (t as? InvocationTargetException)?.targetException ?: t
             Diag.warn(TAG, "播放失败：${cause.javaClass.simpleName}: ${cause.message}")
             false
+        }
+    }
+
+    /**
+     * 登记外部音频源。
+     *
+     * `MusicVideoAudioSourceRegistry.activate(String trackId, String location)`：
+     * - trackId —— 与 [PiscesMediaItem] 第 1 个参数一致
+     * - location —— 与第 6 个参数（URI）一致，宿主据此直接播放该地址
+     *
+     * 失败不致命：宿主会回退到自己的曲库查找（对本地曲库有效）。
+     */
+    private fun activateSource(trackId: String, location: String) {
+        try {
+            val registry = sourceRegistry ?: run {
+                val type = Class.forName(SOURCE_REGISTRY_CLASS, true, javaClass.classLoader)
+                val inst = type.getDeclaredField("INSTANCE").apply { isAccessible = true }.get(null)
+                sourceRegistry = inst
+                inst
+            }
+            val activate = registry.javaClass.methods.firstOrNull {
+                it.name == "activate" && it.parameterCount == 2
+            } ?: run {
+                Diag.warn(TAG, "找不到 activate(trackId, location)")
+                return
+            }
+            activate.invoke(registry, trackId, location)
+        } catch (t: Throwable) {
+            val cause = (t as? InvocationTargetException)?.targetException ?: t
+            Diag.warn(TAG, "登记音频源失败（不影响本地曲库播放）：${cause.javaClass.simpleName}")
+        }
+    }
+
+    /** 清掉登记的外部音频源。离开页面时调用，避免影响宿主自己的播放。 */
+    fun clearSource() {
+        runCatching {
+            sourceRegistry?.javaClass?.methods
+                ?.firstOrNull { it.name == "clear" && it.parameterCount == 0 }
+                ?.invoke(sourceRegistry)
         }
     }
 
@@ -106,22 +174,37 @@ object PlaybackBridge {
             return null
         }
 
-        val single = ctrl.javaClass.methods.firstOrNull {
-            it.name == "setPlaybackQueue" && it.parameterCount == 1
+        val queueList = ctrl.javaClass.methods.firstOrNull {
+            it.name == "setPlaybackQueue" && it.parameterCount == 2
         }
-        if (single == null) {
-            Diag.warn(TAG, "PlaybackController 上找不到 setPlaybackQueue(PiscesMediaItem)")
+        if (queueList == null) {
+            Diag.warn(TAG, "PlaybackController 上找不到 setPlaybackQueue(List, int)")
             return null
         }
-        single.isAccessible = true
+        queueList.isAccessible = true
 
-        setQueueSingle = single
+        val prepare = ctrl.javaClass.methods.firstOrNull {
+            it.name == "prepare" && it.parameterCount == 0
+        }
+        val play = ctrl.javaClass.methods.firstOrNull {
+            it.name == "play" && it.parameterCount == 0
+        }
+        if (prepare == null || play == null) {
+            Diag.warn(TAG, "PlaybackController 上找不到 prepare()/play()")
+            return null
+        }
+        prepare.isAccessible = true
+        play.isAccessible = true
+
+        setQueueList = queueList
+        prepareMethod = prepare
+        playMethod = play
         controller = ctrl
-        Diag.info(TAG, "已解析播放控制器")
+        Diag.info(TAG, "已解析播放控制器（setPlaybackQueue(List,int) → prepare() → play()）")
         return ctrl
     }
 
-    private fun newMediaItem(song: Song, stream: StreamInfo): Any? {
+    private fun newMediaItem(song: Song, trackId: String, uri: String): Any? {
         val ctor = mediaItemCtor ?: run {
             val c = try {
                 Class.forName(MEDIA_ITEM_CLASS, true, javaClass.classLoader)
@@ -140,12 +223,12 @@ object PlaybackBridge {
 
         // 参数顺序见类文档：id / title / artist / album / albumArtist / uri
         return ctor.newInstance(
-            song.hash.ifBlank { song.albumAudioId },
+            trackId,
             song.title,
             song.singer,
             song.albumName ?: "",
             song.singer,
-            stream.url,
+            uri,
         )
     }
 }
