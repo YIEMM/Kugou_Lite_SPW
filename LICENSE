@@ -1,0 +1,39 @@
+MIT License
+
+Copyright (c) 2026 spw-kugou-lite contributors
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+---
+
+## 例外：sidecar/ 目录（独立许可）
+
+本仓库根目录的 MIT 许可**不适用于** `sidecar/` 目录。
+
+`sidecar/rust/` 下的 Rust 源码派生自 **md3Music**（https://github.com/zzyoxml/md3Music），
+该项目以 **GNU Affero General Public License v3.0（AGPL-3.0）** 发布。
+因此 `sidecar/` 目录整体按 AGPL-3.0 授权，详见 `sidecar/LICENSE` 与
+`sidecar/NOTICE.md`。
+
+两部分通过**进程边界**（独立的动态库 + C FFI 调用）交互，因此：
+
+- 主仓 Kotlin/Salt 插件代码：MIT
+- `sidecar/` Rust 服务代码：AGPL-3.0
+
+详见根目录 `NOTICE.md` 的合规说明。

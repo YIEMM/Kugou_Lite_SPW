@@ -36,3 +36,21 @@ probe-output/
 *.tmp
 *.bak
 *.bak-*
+
+# ---- Rust / 原生构建产物 ----
+# sidecar/rust 的源码要进版本库（AGPL 要求提供完整对应源码），
+# 但 Cargo 的编译产物与锁文件缓存不进。
+sidecar/rust/target/
+sidecar/bridge/build/
+*.pdb
+*.exp
+*.ilk
+# MSVC 中间产物：cl.exe 会在当前工作目录留下 .obj
+*.obj
+
+# 插件运行所需的两个 dll 由 sidecar/build_native.ps1 生成：
+#   - kugou_server.dll  上游 Rust 边车（AGPL-3.0）
+#   - kugou_bridge.dll  我们的 JNI 桥接层（MIT）
+# 它们是**构建产物**且体积 4MB+，不进版本库；
+# 打包前必须跑 build_native.ps1（Gradle 的 checkNativeLibs 会校验）。
+src/main/resources/native/*.dll
