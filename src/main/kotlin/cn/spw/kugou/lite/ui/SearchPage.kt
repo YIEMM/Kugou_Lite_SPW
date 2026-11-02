@@ -128,24 +128,6 @@ private fun SearchBox(
     }
 }
 
-/** 一行歌曲。 */
-@Composable
-private fun SongRow(song: Song, onClick: () -> Unit) {
-    Column(
-        Modifier
-            .fillMaxWidth()
-            .clickable { onClick() }
-            .padding(horizontal = 16.dp, vertical = 10.dp),
-    ) {
-        Text3(text = song.title, color = Color(0xFFEDEDED))
-        Text3(
-            text = "${song.singer} · ${song.durationText}",
-            color = Color(0xFF9A9A9A),
-            modifier = Modifier.padding(top = 2.dp),
-        )
-    }
-}
-
 /** 状态提示卡片。 */
 @Composable
 private fun StatusCard(message: String) {

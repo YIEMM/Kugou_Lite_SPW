@@ -21,7 +21,12 @@ data class Song(
     val title: String,
     /** 歌手名，多个用「、」连接。 */
     val singer: String,
-    /** 酷狗文件哈希，取流与取歌词的主键。 */
+    /**
+     * 酷狗文件哈希。
+     *
+     * **可能为空** —— 榜单接口（`/rank/audio`）返回的歌曲**完全没有 hash 字段**，
+     * 只给 `album_audio_id`。所以取流不能只依赖这个字段，见 [streamKey]。
+     */
     val hash: String,
     /** 时长（秒）。 */
     val durationSec: Int,
@@ -33,6 +38,13 @@ data class Song(
     val payType: Int,
     /** 专辑名。 */
     val albumName: String?,
+    /**
+     * 专辑音频 id。榜单接口用它替代 hash 取流。
+     *
+     * 实测 `GET /song/url?album_audio_id=967249675` 可以直接拿到 CDN 直链，
+     * 不需要 hash。
+     */
+    val albumAudioId: String = "",
 ) {
     /** 时长格式化为 `m:ss`。 */
     val durationText: String
@@ -46,6 +58,26 @@ data class Song(
     /** 把封面模板 URL 的 `{size}` 换成实际像素。 */
     fun coverUrl(px: Int = 240): String? =
         imageUrl?.replace("{size}", px.toString())?.takeIf { it.startsWith("http") }
+
+    /**
+     * 是否可以取流。
+     *
+     * hash 或 album_audio_id 至少有一个就能试。两者都没有的条目
+     * （极少数残缺数据）不应出现在可点击列表里。
+     */
+    val canStream: Boolean get() = hash.isNotBlank() || albumAudioId.isNotBlank()
+
+    /**
+     * 取流时优先用的查询参数。
+     *
+     * 用 hash 时走标准路径；只有 album_audio_id 时（榜单歌曲）走替代路径。
+     */
+    val streamQuery: String
+        get() = when {
+            hash.isNotBlank() -> "hash=$hash"
+            albumAudioId.isNotBlank() -> "album_audio_id=$albumAudioId"
+            else -> ""
+        }
 }
 
 /** 搜索结果。 */

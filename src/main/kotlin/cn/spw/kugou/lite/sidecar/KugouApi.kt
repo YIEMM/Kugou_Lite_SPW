@@ -72,13 +72,32 @@ object KugouApi {
     /**
      * 取播放地址。
      *
+     * @param song 要播放的歌曲。[Song.streamQuery] 会自动选择 hash 还是
+     *             album_audio_id 作为查询参数 —— 榜单歌曲没有 hash，只能走后者。
      * @return 成功返回 [StreamInfo]；付费/无权限/未登录返回 null，
      *         具体原因看 [lastNeedsLogin] 与 [lastError]。
      */
-    fun streamUrl(hash: String, quality: String = "128"): StreamInfo? {
-        val json = get("/song/url", mapOf("hash" to hash, "quality" to quality)) ?: return null
+    fun streamUrl(song: Song, quality: String = "128"): StreamInfo? {
+        val query = song.streamQuery
+        if (query.isEmpty()) {
+            lastError = "该歌曲缺少取流标识"
+            return null
+        }
+        return streamUrlByQuery(query, quality)
+    }
+
+    /**
+     * 按 hash 取流（保留给只有 hash 的调用方）。
+     */
+    fun streamUrl(hash: String, quality: String = "128"): StreamInfo? =
+        streamUrlByQuery("hash=$hash", quality)
+
+    private fun streamUrlByQuery(streamQuery: String, quality: String): StreamInfo? {
+        val json = get("/song/url", parseQueryString(streamQuery) + ("quality" to quality)) ?: return null
 
         val url = JsonLite.asString(JsonLite.dig(json, "url"))
+            ?: JsonLite.asArray(JsonLite.dig(json, "url")).orEmpty()
+                .firstNotNullOfOrNull { JsonLite.asString(it) }
         if (url.isNullOrBlank()) {
             val fail = JsonLite.asArray(JsonLite.dig(json, "fail_process")).orEmpty()
                 .mapNotNull { JsonLite.asString(it) }
@@ -87,7 +106,7 @@ object KugouApi {
             } else {
                 "无可用地址"
             }
-            Diag.info(TAG, "取流无地址 hash=$hash fail=$fail")
+            Diag.info(TAG, "取流无地址 $streamQuery fail=$fail")
             return null
         }
 
@@ -105,6 +124,13 @@ object KugouApi {
             durationSec = JsonLite.asInt(JsonLite.dig(json, "timeLength")),
         )
     }
+
+    /** 把 `a=1&b=2` 形式的查询串拆成 Map，便于和其他参数合并。 */
+    private fun parseQueryString(query: String): Map<String, String> =
+        query.split('&').mapNotNull { part ->
+            val i = part.indexOf('=')
+            if (i <= 0) null else part.substring(0, i) to part.substring(i + 1)
+        }.toMap()
 
     // ---------------------------------------------------------------- 歌词
 
@@ -174,36 +200,81 @@ object KugouApi {
         return JsonLite.asArray(songs).orEmpty().mapNotNull { parseSong(it) }
     }
 
+    /**
+     * 榜单列表。
+     *
+     * 实测响应：`data.info[]`，每项含 `rankid` / `rankname` / `imgurl` / `songcount`。
+     * 少数字段可能缺失，全部走容错取值。
+     */
     fun ranks(): List<Rank> {
         val json = get("/rank/list", emptyMap()) ?: return emptyList()
         val info = JsonLite.dig(json, "data", "info")
-        return JsonLite.asArray(info).orEmpty().mapNotNull { item ->
+        val ranks = JsonLite.asArray(info).orEmpty().mapNotNull { item ->
             val obj = JsonLite.asObject(item) ?: return@mapNotNull null
+            val id = firstString(obj, "rankid", "rankId", "id") ?: return@mapNotNull null
             Rank(
-                id = JsonLite.asString(obj["rankid"]) ?: return@mapNotNull null,
-                name = JsonLite.asString(obj["rankname"]) ?: "未命名榜单",
-                coverUrl = JsonLite.asString(obj["imgurl"]) ?: JsonLite.asString(obj["bannerurl"]),
-                songCount = JsonLite.asInt(obj["songcount"]),
+                id = id,
+                name = firstString(obj, "rankname", "rankName", "name") ?: "未命名榜单",
+                coverUrl = firstString(obj, "imgurl", "bannerurl", "img", "cover"),
+                songCount = firstInt(obj, "songcount", "songCount", "song_num"),
             )
         }
+        Diag.info(TAG, "榜单列表 → ${ranks.size} 个")
+        return ranks
     }
 
+    /**
+     * 榜单内的歌曲列表。
+     *
+     * ## 响应结构（实测）
+     *
+     * 歌曲数组可能在 `data.songlist` / `data.list` / `data.songs` 之一 ——
+     * 上游 `rank.rs` 里有同款探测逻辑，这里保持一致的顺序。
+     * 早期实现只读 `data.info`（那是**榜单列表**用的字段，不是歌曲），
+     * 所以永远拿到空列表，导致「排行榜内列表无法点击」。
+     */
     fun rankSongs(rankId: String, page: Int = 1, pageSize: Int = 50): List<Song> {
         val json = get(
             "/rank/audio",
             mapOf("rankid" to rankId, "page" to page.toString(), "pagesize" to pageSize.toString()),
         ) ?: return emptyList()
-        val songs = JsonLite.dig(json, "data", "info")
-        return JsonLite.asArray(songs).orEmpty().mapNotNull { parseSong(it) }
+
+        val candidates = listOf("songlist", "list", "songs", "info")
+        val list = candidates.firstNotNullOfOrNull { JsonLite.asArray(JsonLite.dig(json, "data", it)) }
+            ?: return emptyList()
+
+        val songs = list.mapNotNull { parseSong(it) }
+        Diag.info(TAG, "榜单 $rankId → ${songs.size} 首")
+        return songs
     }
 
-    /** 每日推荐。响应结构在不同版本间有差异，这里两种都试。 */
+    /**
+     * 每日推荐。
+     *
+     * ## 响应结构（实测 Rust 版 `/everyday/recommend`）
+     *
+     * ```
+     * { "status":1, "data": { "song_list": [ ... 30 首 ... ] } }
+     * ```
+     *
+     * 注意 `song_list` 里的歌曲字段是 **snake_case**，与搜索结果的 PascalCase 不同：
+     * `filename` / `songname` / `hash` / `timelen` / `pay_type` / `album_id`。
+     * [parseSong] 两种命名都兼容。
+     *
+     * 早期实现读的是 `data.songs` 与 `data.info`，两个都不存在，
+     * 于是永远返回空列表 —— 这正是「每日推荐无法获取」的原因。
+     */
     fun dailyRecommend(): List<Song> {
         val json = get("/everyday/recommend", emptyMap()) ?: return emptyList()
-        val direct = JsonLite.dig(json, "data", "songs")
-        val fromInfo = JsonLite.dig(json, "data", "info")
-        val list = JsonLite.asArray(direct) ?: JsonLite.asArray(fromInfo) ?: return emptyList()
-        return list.mapNotNull { parseSong(it) }
+
+        // 三种可能的容器名，按优先级探测，兼容不同上游版本。
+        val candidates = listOf("song_list", "songs", "info")
+        val list = candidates.firstNotNullOfOrNull { JsonLite.asArray(JsonLite.dig(json, "data", it)) }
+            ?: return emptyList()
+
+        val songs = list.mapNotNull { parseSong(it) }
+        Diag.info(TAG, "每日推荐 → ${songs.size} 首")
+        return songs
     }
 
     // ---------------------------------------------------------------- 登录
@@ -244,28 +315,62 @@ object KugouApi {
 
     // ---------------------------------------------------------------- 底层
 
+    /**
+     * 把任意接口返回的歌曲对象解析成 [Song]。
+     *
+     * ## 为什么字段名有这么多种
+     *
+     * 酷狗不同接口返回的歌曲字段命名**不统一**（实测）：
+     *
+     * | 接口 | 命名风格 | 歌名字段 | 取流键 |
+     * |---|---|---|---|
+     * | `/search` | PascalCase | `OriSongName` | `FileHash` |
+     * | `/everyday/recommend` | snake_case | `songname` | `hash` |
+     * | `/rank/audio` | snake_case | `songname` | **无 hash**，用 `album_audio_id` |
+     *
+     * 所以这里按「先 PascalCase、后 snake_case」的顺序逐个探测。
+     * **不要**只按一种命名写死 —— 那会导致某些列表永远为空。
+     *
+     * ## 榜单歌曲的特殊之处
+     *
+     * `/rank/audio` 的歌曲对象**根本没有 hash 字段**，只有：
+     * `audio_id` / `album_audio_id` / `album_id`。实测
+     * `GET /song/url?album_audio_id=967249675` 能直接拿到 CDN 直链，
+     * 所以 hash 为空时保留 `albumAudioId` 作为替代取流键。
+     * hash 和 albumAudioId 都没有的条目直接丢弃（无法播放，不该出现在列表里）。
+     */
     private fun parseSong(item: Any?): Song? {
         val obj = JsonLite.asObject(item) ?: return null
-        val hash = JsonLite.asString(obj["FileHash"])
-            ?: JsonLite.asString(obj["hash"])
-            ?: return null
-        if (hash.isBlank()) return null
 
-        val fileName = JsonLite.asString(obj["FileName"])
-            ?: JsonLite.asString(obj["filename"])
-            ?: JsonLite.asString(obj["OriSongName"])
+        val hash = firstString(obj, "FileHash", "hash", "File_hash", "filehash").orEmpty()
+        val albumAudioId = firstString(
+            obj,
+            "album_audio_id",
+            "albumAudioId",
+            "album_audioid",
+            "mixsongid",
+            "MixSongID",
+            "EMixSongID",
+        ).orEmpty()
+
+        // 两个取流键都没有 => 这首歌点不了，不要放进列表。
+        if (hash.isBlank() && albumAudioId.isBlank()) return null
+
+        val fileName = firstString(obj, "FileName", "filename", "ori_audio_name", "OriSongName")
             ?: "未知曲目"
 
-        val title = JsonLite.asString(obj["OriSongName"])
-            ?: JsonLite.asString(obj["songname"])
-            ?: JsonLite.asString(obj["SongName"])
+        val title = firstString(obj, "OriSongName", "songname", "SongName", "official_songname")
             ?: fileName.substringAfter(" - ", fileName)
 
-        val singer = JsonLite.asString(obj["SingerName"])
-            ?: JsonLite.asString(obj["singername"])
+        val singer = firstString(obj, "SingerName", "singername", "singer_name", "author_name")
             ?: JsonLite.asArray(obj["Singers"]).orEmpty()
                 .mapNotNull { JsonLite.asString(JsonLite.asObject(it)?.get("name")) }
                 .joinToString("、")
+                .ifBlank {
+                    JsonLite.asArray(obj["authors"]).orEmpty()
+                        .mapNotNull { JsonLite.asString(JsonLite.asObject(it)?.get("author_name")) }
+                        .joinToString("、")
+                }
                 .ifBlank { "未知歌手" }
 
         return Song(
@@ -273,13 +378,25 @@ object KugouApi {
             title = title,
             singer = singer,
             hash = hash,
-            durationSec = JsonLite.asInt(obj["Duration"] ?: obj["timelen"] ?: obj["timeLength"]),
-            imageUrl = JsonLite.asString(obj["Image"]) ?: JsonLite.asString(obj["img"]),
-            fileSize = JsonLite.asLong(obj["FileSize"] ?: obj["filesize"]),
-            payType = JsonLite.asInt(obj["PayType"] ?: obj["pay_type"]),
-            albumName = JsonLite.asString(obj["AlbumName"]) ?: JsonLite.asString(obj["album_name"]),
+            durationSec = firstInt(obj, "Duration", "timelen", "timeLength", "duration"),
+            imageUrl = firstString(obj, "Image", "img", "album_image", "transparent_url")
+                ?: JsonLite.asString(JsonLite.dig(obj["trans_param"], "union_cover")),
+            fileSize = firstLong(obj, "FileSize", "filesize", "file_size"),
+            payType = firstInt(obj, "PayType", "pay_type"),
+            albumName = firstString(obj, "AlbumName", "album_name", "remark"),
+            albumAudioId = albumAudioId,
         )
     }
+
+    /** 按顺序取第一个非空字符串字段。 */
+    private fun firstString(obj: Map<String, Any?>, vararg keys: String): String? =
+        keys.firstNotNullOfOrNull { JsonLite.asString(obj[it])?.takeIf { s -> s.isNotBlank() } }
+
+    private fun firstInt(obj: Map<String, Any?>, vararg keys: String): Int =
+        keys.firstNotNullOfOrNull { k -> obj[k]?.let { JsonLite.asInt(it) } } ?: 0
+
+    private fun firstLong(obj: Map<String, Any?>, vararg keys: String): Long =
+        keys.firstNotNullOfOrNull { k -> obj[k]?.let { JsonLite.asLong(it) } } ?: 0L
 
     private fun get(path: String, params: Map<String, String>): Any? {
         val http = SidecarManager.baseUrl
@@ -316,17 +433,23 @@ object KugouApi {
             val body = (if (code in 200..299) conn.inputStream else conn.errorStream)
                 ?.bufferedReader()?.use { it.readText() } ?: ""
 
-            // 只有**真正的登录/验证失败**才标记 lastNeedsLogin。
-            // 早期版本写成 `code == 502 || body.contains("20028")`，把任何 502
-            // 网关错误都当成「需要登录」——实测 /rank/list 返回 200 但 body 里
-            // 含 20028 字段之外的内容时会被误判，UI 就错误提示用户去登录。
-            // 现在严格按 errcode 判断。
+            // 登录/验证失败的判定。
+            //
+            // - `20028`：本次请求需要验证（行为指纹反爬，未登录时取流就是它）
+            // - `20017` / `20018`：**登录态失效**（token 过期或被踢）。
+            //   实测 `/user/playlist` 与 `/user/detail` 在 token 过期时返回
+            //   `{"status":0,"error_code":20017}` 且 HTTP 502。
+            //
+            // 早期只判 20028，导致 token 过期时 UI 显示「暂无歌单」，
+            // 用户会以为账号里真的没有歌单。现在三种错误码都归为「需要登录」。
             val needsLogin = body.contains("\"errcode\":20028") ||
-                body.contains("本次请求需要验证")
+                body.contains("本次请求需要验证") ||
+                body.contains("\"error_code\":20017") ||
+                body.contains("\"error_code\":20018")
             if (needsLogin) {
                 lastNeedsLogin = true
-                lastError = "需要登录酷狗账号"
-                Diag.warn(TAG, "$path 需要登录（$code）")
+                lastError = "登录已失效，请重新扫码登录"
+                Diag.warn(TAG, "$path 需要重新登录（HTTP $code）")
                 return null
             }
             lastNeedsLogin = false

@@ -13,8 +13,11 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import cn.spw.kugou.lite.diag.Diag
+import cn.spw.kugou.lite.host.PlaybackBridge
+import cn.spw.kugou.lite.sidecar.ApiExec
 import cn.spw.kugou.lite.sidecar.Async
 import cn.spw.kugou.lite.sidecar.AuthStore
+import cn.spw.kugou.lite.sidecar.KugouApi
 import cn.spw.kugou.lite.sidecar.SidecarManager
 import cn.spw.kugou.lite.sidecar.rememberAsyncState
 
@@ -41,22 +44,46 @@ import cn.spw.kugou.lite.sidecar.rememberAsyncState
  */
 @Composable
 fun KugouLitePage() {
-    // 主页永远是根；子页用宿主原生返回按钮回主页。
+    // 主页永远是根；子页用宿主原生返回按钮回上一级。
     when (PageNav.tab) {
         KugouLiteTab.Home -> HomePage()
+
         KugouLiteTab.Search -> SubPage(title = "搜索", onBack = { PageNav.backHome() }) {
             SearchPage(onPick = { song ->
-                Diag.info("[page] 选中「${song.title}」，P4 接播放")
+                Diag.info("[page] 搜索页点歌「${song.title}」- ${song.singer}")
+                ApiExec.run({ r -> r.onFailure { Diag.warn("[page] 取流异常：${it.message}") } }) {
+                    val stream = KugouApi.streamUrl(song)
+                    if (stream == null) {
+                        Diag.warn("[page] 取流失败：${KugouApi.lastError ?: "未知原因"}")
+                    } else {
+                        PlaybackBridge.play(song, stream)
+                    }
+                }
             })
         }
+
         KugouLiteTab.Playlists -> SubPage(title = "我的歌单", onBack = { PageNav.backHome() }) {
             PlaylistPage()
         }
+
         KugouLiteTab.Ranks -> SubPage(title = "排行榜", onBack = { PageNav.backHome() }) {
             RankPage()
         }
+
         KugouLiteTab.Daily -> SubPage(title = "每日推荐", onBack = { PageNav.backHome() }) {
             DailyPage()
+        }
+
+        // 歌单详情 / 榜单详情共用同一个歌曲列表页，标题由 PageNav 决定。
+        KugouLiteTab.SongList -> SubPage(
+            title = PageNav.detailTitle.ifBlank { "歌曲列表" },
+            onBack = { PageNav.backHome() },
+        ) {
+            SongListPage()
+        }
+
+        KugouLiteTab.Login -> SubPage(title = "登录", onBack = { PageNav.backHome() }) {
+            LoginPage()
         }
     }
 }
@@ -123,22 +150,25 @@ private fun HomePage() {
 
             SaltGroupTitle("账户")
             SaltCard(Modifier.fillMaxWidth().padding(horizontal = 16.dp)) {
-                Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp)) {
-                    Text3(
-                        text = if (AuthStore.isLoggedIn) "已登录：${AuthStore.nickname ?: AuthStore.userId}"
-                        else "未登录",
-                        color = if (AuthStore.isLoggedIn) androidx.compose.ui.graphics.Color(0xFF8FE3A8)
-                        else androidx.compose.ui.graphics.Color(0xFFE8B96A),
-                    )
+                SaltItem(
+                    title = if (AuthStore.isLoggedIn) {
+                        "已登录：${AuthStore.nickname ?: AuthStore.userId}"
+                    } else {
+                        "未登录"
+                    },
+                    subtitle = if (AuthStore.isLoggedIn) "点击可重新扫码登录" else "点击扫码登录（取流与歌单需要）",
+                    modifier = Modifier.fillMaxWidth(),
+                    onClick = { PageNav.go(KugouLiteTab.Login) },
+                )
+                Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp)) {
                     Text3(
                         text = when (val s = sidecarState.value) {
-                            is Async.Loading -> "正在准备在线服务（首次需下载约 32 MB）…"
+                            is Async.Loading -> "正在准备在线服务…"
                             // 已就绪或已失败时以 SidecarManager 的真实状态为准：
                             // 页面切换会重建 state 回到 Idle，但进程可能还在跑。
                             else -> SidecarManager.statusText()
                         },
                         color = androidx.compose.ui.graphics.Color(0xFF9A9A9A),
-                        modifier = Modifier.padding(top = 4.dp),
                     )
                 }
             }
