@@ -193,14 +193,14 @@ object KugouApi {
         }
     }
 
-    /** 第二步：按候选 id + accesskey 取解码后的 LRC 文本。 */
-    fun lyric(candidate: LyricCandidate): String? {
+    /** 第二步：按候选 id + accesskey 取解码后的歌词文本。 */
+    fun lyric(candidate: LyricCandidate, fmt: String = "krc"): String? {
         val json = get(
             "/lyric",
             mapOf(
                 "id" to candidate.id,
                 "accesskey" to candidate.accessKey,
-                "fmt" to "lrc",
+                "fmt" to fmt,
                 "decode" to "true",
             ),
         ) ?: return null
@@ -208,10 +208,35 @@ object KugouApi {
             ?: JsonLite.asString(JsonLite.dig(json, "content"))
     }
 
-    /** 一步取歌词：内部串起两步。 */
+    /**
+     * 一步取歌词：内部串起两步。
+     *
+     * 优先取 **KRC（逐字）**，失败再退回 LRC（逐行）。
+     *
+     * ## 为什么优先 KRC
+     *
+     * 酷狗歌词接口的 `fmt` 参数决定格式（实测同一首歌）：
+     *
+     * | fmt | 大小 | 格式 |
+     * |---|---|---|
+     * | `lrc` | 811 B | 逐行 `[00:03.75]愛舐め上手芳しき` |
+     * | `krc` | 7744 B | **逐字** `[191,3515]<0,836,0>黑<836,493,0>縁...` |
+     *
+     * KRC 的逐字格式：
+     * ```
+     * [行起始ms,行时长ms]<字相对偏移ms,字时长ms,0>字<...>字...
+     * ```
+     *
+     * 宿主内部的歌词模型（`com.xuncorp.spc.lyrics.LyricsLine` /
+     * `LyricsCell(startTime=...)`）本身就是逐字结构，所以喂 KRC 才能
+     * 逐字高亮；喂 LRC 只能整行高亮。
+     */
     fun lyricByHash(hash: String): String? {
         val best = searchLyric(hash).firstOrNull() ?: return null
-        return lyric(best)
+        // 先试 KRC（逐字）
+        lyric(best, fmt = "krc")?.takeIf { it.isNotBlank() }?.let { return it }
+        // 退回 LRC（逐行）
+        return lyric(best, fmt = "lrc")
     }
 
     // ---------------------------------------------------------------- 歌单 / 榜单 / 推荐

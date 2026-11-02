@@ -102,9 +102,9 @@ object AudioCache {
     }
 
     /**
-     * 把封面写进音频文件的 ID3 APIC 帧。
+     * 把封面写进音频文件的 ID3 APIC 帧，同时**旁挂一份同名 `.lrc` 文件**。
      *
-     * 失败不影响播放（只是没有封面），所以整体静默降级。
+     * 失败不影响播放（只是没有封面/歌词），所以整体静默降级。
      */
     private fun embedCover(song: Song, audioFile: File) {
         try {
@@ -127,6 +127,60 @@ object AudioCache {
             Id3CoverWriter.writeCover(audioFile, bytes, Id3CoverWriter.detectMime(bytes))
         } catch (e: Exception) {
             Diag.warn(TAG, "内嵌封面失败（不影响播放）：${e.message}")
+        }
+    }
+
+    /**
+     * 把歌词写到音频文件**同目录同名的 `.lrc`** 文件。
+     *
+     * ## 为什么要旁挂一份
+     *
+     * 宿主 `TagParser.readLyrics` 支持的来源（反汇编确认）：
+     *
+     * | 来源 | 方法 |
+     * |---|---|
+     * | 内嵌 tag 的 LYRICS 字段 | `readEmbeddedLyrics` |
+     * | FLAC 的 LYRICS/UNSYNCEDLYRICS | `readFlacLyricsWithoutPictures` |
+     * | **同目录同名 `.lrc`** | `readLyricsByLrc` |
+     * | 同目录同名 `.spl` | `readLyricsBySpl` |
+     *
+     * ## KRC（逐字）优先
+     *
+     * 酷狗 `fmt=krc` 返回**逐字**歌词，`fmt=lrc` 只有逐行。
+     * 宿主内部的歌词模型是 `LyricsLine` + `LyricsCell`（逐字单元），
+     * 所以喂逐字数据才能逐字高亮。
+     *
+     * 写入策略：
+     * 1. 若是 KRC，先转成**增强 LRC**（`[00:03.75]<00:03.75>愛<00:04.33>舐`）——
+     *    这是业界通用写法，兼容性最好；
+     * 2. 同时把原始 KRC（剥掉 `[language:]` 翻译段）也保留一份 `.krc`，
+     *    便于排查与将来切换。
+     *
+     * @param audioFile 本地音频文件
+     * @param lyrics 歌词文本（KRC 或 LRC 均可）
+     */
+    fun writeLrcSidecar(audioFile: File, lyrics: String): Boolean {
+        if (lyrics.isBlank()) return false
+        return try {
+            val isKrc = KrcLyrics.isKrc(lyrics)
+            val text = if (isKrc) KrcLyrics.toEnhancedLrc(lyrics) else lyrics
+            val lrc = File(audioFile.parentFile, audioFile.nameWithoutExtension + ".lrc")
+            lrc.writeText(text, Charsets.UTF_8)
+
+            if (isKrc) {
+                // 原始 KRC 也留一份（剥掉翻译段），便于排查
+                runCatching {
+                    File(audioFile.parentFile, audioFile.nameWithoutExtension + ".krc")
+                        .writeText(KrcLyrics.sanitize(lyrics), Charsets.UTF_8)
+                }
+                Diag.info(TAG, "已写入逐字歌词 ${lrc.name}（${text.length} 字符，KRC 源 ${lyrics.length} 字符）")
+            } else {
+                Diag.info(TAG, "已写入逐行歌词 ${lrc.name}（${lyrics.length} 字符）")
+            }
+            true
+        } catch (e: Exception) {
+            Diag.warn(TAG, "写入 .lrc 失败：${e.message}")
+            false
         }
     }
 

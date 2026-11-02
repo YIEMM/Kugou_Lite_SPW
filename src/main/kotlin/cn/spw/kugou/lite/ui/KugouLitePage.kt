@@ -64,6 +64,7 @@ fun KugouLitePage() {
                             val lrc = KugouApi.lyricByHash(song.hash)
                             if (!lrc.isNullOrBlank() && local != null) {
                                 Id3CoverWriter.writeLyrics(local, lrc)
+                AudioCache.writeLrcSidecar(local, lrc)
                             }
                         }
                         val ok = PlaybackBridge.playQueue(queue, index, { s -> KugouApi.streamUrl(s) }, local)

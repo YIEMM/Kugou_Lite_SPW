@@ -167,6 +167,7 @@ private fun onSongPicked(queue: List<Song>, index: Int) {
             val lrc = KugouApi.lyricByHash(song.hash)
             if (!lrc.isNullOrBlank() && local != null) {
                 Id3CoverWriter.writeLyrics(local, lrc)
+                AudioCache.writeLrcSidecar(local, lrc)
             }
         }.onFailure { Diag.warn("[page] 写入内嵌歌词失败：${it.message}") }
 

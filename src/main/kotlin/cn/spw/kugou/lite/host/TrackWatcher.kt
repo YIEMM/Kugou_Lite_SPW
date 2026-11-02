@@ -130,6 +130,7 @@ object TrackWatcher {
             val lrc = KugouApi.lyricByHash(song.hash)
             if (!lrc.isNullOrBlank() && local != null) {
                 Id3CoverWriter.writeLyrics(local, lrc)
+                AudioCache.writeLrcSidecar(local, lrc)
             }
         }
         PlaybackBridge.rebindCurrent(song, stream, local)
