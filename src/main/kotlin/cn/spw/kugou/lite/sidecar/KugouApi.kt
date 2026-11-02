@@ -38,6 +38,14 @@ object KugouApi {
     private const val CONNECT_TIMEOUT_MS = 6_000
     private const val READ_TIMEOUT_MS = 12_000
 
+    /**
+     * 收藏页 page_id —— 解锁「已收藏但无版权」曲目用。
+     *
+     * 酷狗约定：歌曲被收藏后，即便无版权也可通过收藏页的 page_id 解锁播放。
+     * 参考 md3Music `kugou_api_client.dart` 与 EchoMusic `resolver.ts`。
+     */
+    private const val COLLECT_PAGE_ID = "356753938"
+
     /** 最近一次调用是否因未登录被拒（20028）。UI 据此提示去登录。 */
     @Volatile
     var lastNeedsLogin: Boolean = false
@@ -83,17 +91,48 @@ object KugouApi {
             lastError = "该歌曲缺少取流标识"
             return null
         }
-        return streamUrlByQuery(query, quality)
+
+        // 第一轮：常规取流
+        streamUrlByQuery(query, quality, pageId = null)?.let { return it }
+
+        // 第二轮：**已收藏无版权歌曲的解锁兜底**
+        //
+        // 酷狗服务端对部分曲目返回
+        //   status=3, privilege=5, _msg="Deny: the current behavior ... forbidden"
+        // 这是版权/地区限制，常规请求永远拿不到地址（实测《重音テト - 臙脂》
+        // 所有音质档位、所有常规接口全部 status=3）。
+        //
+        // 但酷狗有一条约定：**歌曲被收藏后，即便无版权也可通过收藏页的
+        // page_id 解锁播放**。参考 md3Music 的实现：
+        //
+        // > 已收藏无版权歌曲兜底：用 ppage_id=356753938（收藏页）尝试获取
+        // > 完整播放链接。酷狗约定：歌曲被收藏后，即便无版权也可通过该
+        // > page_id 解锁播放。
+        // > 参考 EchoMusic 的 resolver.ts 中 getSongUrl(track.hash, '', 356753938)
+        //
+        // 实测有效：同一首歌带 `ppage_id=356753938` 后立即返回 128k 直链。
+        Diag.info(TAG, "常规取流失败，尝试收藏页解锁（ppage_id=$COLLECT_PAGE_ID）")
+        streamUrlByQuery(query, quality, pageId = COLLECT_PAGE_ID)?.let {
+            Diag.info(TAG, "收藏页解锁成功：「${song.title}」")
+            return it
+        }
+
+        // 两轮都失败，把最后一轮的 lastError 留给 UI
+        return null
     }
 
     /**
      * 按 hash 取流（保留给只有 hash 的调用方）。
      */
     fun streamUrl(hash: String, quality: String = "128"): StreamInfo? =
-        streamUrlByQuery("hash=$hash", quality)
+        streamUrlByQuery("hash=$hash", quality, pageId = null)
 
-    private fun streamUrlByQuery(streamQuery: String, quality: String): StreamInfo? {
-        val json = get("/song/url", parseQueryString(streamQuery) + ("quality" to quality)) ?: return null
+    private fun streamUrlByQuery(streamQuery: String, quality: String, pageId: String?): StreamInfo? {
+        val params = parseQueryString(streamQuery).toMutableMap()
+        params["quality"] = quality
+        pageId?.let { params["ppage_id"] = it }
+
+        val json = get("/song/url", params) ?: return null
 
         val url = JsonLite.asString(JsonLite.dig(json, "url"))
             ?: JsonLite.asArray(JsonLite.dig(json, "url")).orEmpty()
@@ -101,12 +140,14 @@ object KugouApi {
         if (url.isNullOrBlank()) {
             val fail = JsonLite.asArray(JsonLite.dig(json, "fail_process")).orEmpty()
                 .mapNotNull { JsonLite.asString(it) }
-            lastError = if (fail.contains("buy") || fail.contains("pkg")) {
-                "该曲目需要酷狗会员"
-            } else {
-                "无可用地址"
+            val status = JsonLite.asInt(JsonLite.dig(json, "status"))
+            lastError = when {
+                fail.contains("buy") || fail.contains("pkg") -> "该曲目需要酷狗会员"
+                // status=3 + privilege=5 是版权/地区限制，不是会员问题
+                status == 3 -> "该曲目受版权限制（可尝试收藏后再播放）"
+                else -> "无可用地址"
             }
-            Diag.info(TAG, "取流无地址 $streamQuery fail=$fail")
+            Diag.info(TAG, "取流无地址 $streamQuery status=$status fail=$fail")
             return null
         }
 
@@ -445,15 +486,17 @@ object KugouApi {
                 .ifBlank { composite?.substringBefore(" - ")?.trim().orEmpty() }
                 .ifBlank { "未知歌手" }
 
+        val size = firstLong(obj, "FileSize", "filesize", "file_size", "size")
+
         return Song(
             fileName = fileName,
             title = title,
             singer = singer,
             hash = hash,
-            durationSec = parseDurationSec(obj),
+            durationSec = parseDurationSec(obj, size),
             imageUrl = firstString(obj, "Image", "img", "album_image", "transparent_url")
                 ?: JsonLite.asString(JsonLite.dig(obj["trans_param"], "union_cover")),
-            fileSize = firstLong(obj, "FileSize", "filesize", "file_size", "size"),
+            fileSize = size,
             payType = firstInt(obj, "PayType", "pay_type"),
             albumName = firstString(obj, "AlbumName", "album_name", "remark"),
             albumAudioId = albumAudioId,
@@ -465,18 +508,36 @@ object KugouApi {
      *
      * ## 单位不一致（实测）
      *
-     * | 接口 | 字段 | 单位 |
-     * |---|---|---|
-     * | `/search` | `Duration` | 秒（299） |
-     * | `/playlist/track/all` | `timelen` | **毫秒**（270027） |
+     * | 接口 | 字段 | 单位 | 样例 |
+     * |---|---|---|---|
+     * | `/search` | `Duration` | 秒 | 299 |
+     * | `/playlist/track/all` | `timelen` | **毫秒** | 270027 |
      *
-     * 早期一律当秒处理，歌单里就出现 `4500:27` 这种荒谬时长。
-     * 这里按数值量级判断：大于 100000 视为毫秒（100000 秒 ≈ 27 小时，
-     * 正常歌曲不可能这么长）。
+     * ## 为什么不能只靠量级判断
+     *
+     * 最初用「> 100000 视为毫秒」，但歌单里有大量**几十秒的片段**
+     * （如「青柠 (36秒片段)」`timelen=36101`），36101 < 100000 会被
+     * 误判成 36101 秒 → 渲染出 `601:41` 这种荒谬时长。
+     *
+     * 现在用**文件大小交叉校验**：mp3 的码率下限约 32 kbps，
+     * 所以「秒数 × 4000 字节/秒」是保守上界。若换算出的秒数对应的大小
+     * 远超实际文件，就说明这个数值是毫秒。
+     *
+     * @param fileSize 同一对象里的 `size` 字段（字节），没有则传 0
      */
-    private fun parseDurationSec(obj: Map<String, Any?>): Int {
+    private fun parseDurationSec(obj: Map<String, Any?>, fileSize: Long): Int {
         val raw = firstInt(obj, "Duration", "duration", "timelen", "timeLength")
         if (raw <= 0) return 0
+
+        // 有文件大小时用它交叉校验，这是最可靠的判据
+        if (fileSize > 0) {
+            // 128kbps ≈ 16000 B/s；用 4000 B/s 作下限（≈32kbps），足够宽松
+            val maxSecIfUnitIsSec = fileSize / 4000
+            if (raw > maxSecIfUnitIsSec) return raw / 1000
+            return raw
+        }
+
+        // 没有文件大小：退回量级判断（100000 秒 ≈ 27 小时）
         return if (raw > 100_000) raw / 1000 else raw
     }
 
