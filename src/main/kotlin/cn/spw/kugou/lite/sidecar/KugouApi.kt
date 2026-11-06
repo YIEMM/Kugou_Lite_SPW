@@ -254,8 +254,14 @@ object KugouApi {
         return lyric(best, fmt = "lrc")
     }
 
-    // ---------------------------------------------------------------- 歌手
+    /**
+     * 仅供测试：把一段 JSON 对象解析成 [Song]。
+     *
+     * 生产代码请用内部的 `parseSong`，避免外部误传未校验的数据。
+     */
+    internal fun parseSongForTest(obj: Any?): Song? = parseSong(obj)
 
+    // ---------------------------------------------------------------- 歌手
     /**
      * 歌手的单曲列表。
      *
@@ -509,8 +515,7 @@ object KugouApi {
      * 所以 hash 为空时保留 `albumAudioId` 作为替代取流键。
      * hash 和 albumAudioId 都没有的条目直接丢弃（无法播放，不该出现在列表里）。
      */
-    private fun parseSong(item: Any?): Song? {
-        val obj = JsonLite.asObject(item) ?: return null
+    private fun parseSong(item: Any?): Song? {        val obj = JsonLite.asObject(item) ?: return null
 
         val hash = firstString(obj, "FileHash", "hash", "File_hash", "filehash").orEmpty()
         val albumAudioId = firstString(
@@ -585,6 +590,43 @@ object KugouApi {
             }
         }
 
+        // 结构化的逐位歌手列表，让界面上每个名字单独可点。
+        //
+        // 优先用 Singers[]（含 name + id）；其次 authors[]；
+        // 都没有就把拼接好的 singer 字符串按「、」拆开（此时没有 id，
+        // 名字照常显示但不可点）。
+        val artists = buildList {
+            JsonLite.asArray(obj["Singers"]).orEmpty().forEach { item ->
+                val o = JsonLite.asObject(item) ?: return@forEach
+                val name = JsonLite.asString(o["name"])?.trim().orEmpty()
+                if (name.isNotBlank()) {
+                    add(ArtistRef(name = name, id = JsonLite.asString(o["id"]).orEmpty()))
+                }
+            }
+            if (isEmpty()) {
+                JsonLite.asArray(obj["authors"]).orEmpty().forEach { item ->
+                    val o = JsonLite.asObject(item) ?: return@forEach
+                    val name = JsonLite.asString(o["author_name"])?.trim().orEmpty()
+                    if (name.isNotBlank()) {
+                        add(
+                            ArtistRef(
+                                name = name,
+                                id = JsonLite.asString(o["author_id"])
+                                    ?: JsonLite.asString(o["id"]).orEmpty(),
+                            ),
+                        )
+                    }
+                }
+            }
+            if (isEmpty() && singer != "未知歌手") {
+                // 只有拼接字符串可用：拆开后都不带 id
+                singer.split('、', '/', '&', ',', '，')
+                    .map { it.trim() }
+                    .filter { it.isNotEmpty() }
+                    .forEach { add(ArtistRef(name = it)) }
+            }
+        }
+
         return Song(
             fileName = fileName,
             title = title,
@@ -598,6 +640,7 @@ object KugouApi {
             albumName = firstString(obj, "AlbumName", "album_name", "remark"),
             albumAudioId = albumAudioId,
             artistIds = artistIds,
+            artists = artists,
         )
     }
 

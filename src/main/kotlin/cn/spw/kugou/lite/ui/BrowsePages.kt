@@ -19,6 +19,10 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.layout.ContentScale
 import cn.spw.kugou.lite.host.TrackWatcher
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
+import cn.spw.kugou.lite.sidecar.ArtistRef
 import cn.spw.kugou.lite.diag.Diag
 import cn.spw.kugou.lite.host.PlaybackBridge
 import cn.spw.kugou.lite.sidecar.ApiExec
@@ -182,11 +186,16 @@ private fun onSongPicked(queue: List<Song>, index: Int) = playSongsFromQueue(que
  * 由 [CoverLoader] 异步加载 + 两级缓存。加载中/失败时显示音符占位块，
  * 保证行高稳定，不会因为图片加载而跳动。
  *
- * ## 歌手名可点
+ * ## 每位歌手单独可点
  *
- * 有 `artistIds` 时，歌手名单独可点并进入歌手页；其余区域点击是「播放」。
- * 用两个独立 `clickable` 实现（内层会消费事件，不会冒泡到外层）。
+ * 一首歌常有多个歌手（`A、B、C`）。早期把它们当成**一个整体标签**，
+ * 点击只能跳到第一位歌手，其余几位点不到。
+ *
+ * 现在按 [Song.artists] 逐位渲染：有 id 的用主色且可点，
+ * 没 id 的（歌单接口不提供）用次要色且不可点，中间用顿号分隔。
+ * 用 [FlowRow] 而不是 [Row]，歌手多时能自动换行，不会溢出。
  */
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 internal fun SongRow(song: Song, onClick: () -> Unit) {
     Row(
@@ -200,25 +209,32 @@ internal fun SongRow(song: Song, onClick: () -> Unit) {
         Column(Modifier.padding(start = 12.dp)) {
             Text3(text = song.title, color = Color(0xFFEDEDED))
 
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                val firstArtistId = song.artistIds.firstOrNull()
-                if (firstArtistId != null) {
-                    Text3(
-                        text = song.singer,
-                        color = Color(0xFF6FA8DC),
-                        modifier = Modifier.clickable {
-                            PageNav.openArtist(firstArtistId, song.singer)
-                        },
-                    )
-                } else {
-                    Text3(text = song.singer, color = Color(0xFF9A9A9A))
+            FlowRow(
+                modifier = Modifier.padding(top = 2.dp),
+                verticalArrangement = Arrangement.Center,
+            ) {
+                val artists = song.artists.ifEmpty {
+                    // 兜底：接口没给结构，就展示拼接好的整串，不可点
+                    listOf(ArtistRef(name = song.singer))
+                }
+                artists.forEachIndexed { index, artist ->
+                    if (index > 0) {
+                        Text3("、", color = Color(0xFF9A9A9A))
+                    }
+                    if (artist.clickable) {
+                        Text3(
+                            text = artist.name,
+                            color = Color(0xFF6FA8DC),
+                            modifier = Modifier.clickable {
+                                PageNav.openArtist(artist.id, artist.name)
+                            },
+                        )
+                    } else {
+                        Text3(text = artist.name, color = Color(0xFF9A9A9A))
+                    }
                 }
                 if (song.durationSec > 0) {
-                    Text3(
-                        text = " · ${song.durationText}",
-                        color = Color(0xFF9A9A9A),
-                        modifier = Modifier.padding(top = 2.dp),
-                    )
+                    Text3(text = " · ${song.durationText}", color = Color(0xFF9A9A9A))
                 }
             }
         }

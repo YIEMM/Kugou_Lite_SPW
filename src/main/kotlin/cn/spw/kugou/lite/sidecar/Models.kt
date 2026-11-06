@@ -52,6 +52,22 @@ data class Song(
      * 榜单/歌单接口不一定提供，所以可能为空。
      */
     val artistIds: List<String> = emptyList(),
+    /**
+     * 逐位歌手的 (名字, id) 对，用于让**每个歌手名单独可点**。
+     *
+     * ## 为什么不能只用 [singer] + [artistIds]
+     *
+     * [singer] 是把多位歌手用「、」拼起来的**一个字符串**，
+     * 而 [artistIds] 是并列的 id 列表。界面上如果只把它们当成
+     * 一整个标签，点击就只能跳到第一位歌手 —— 其余歌手没法单独点。
+     *
+     * 所以这里保留结构化信息：每一位歌手对应一项，`id` 可能为空
+     * （歌单接口不提供 id 时），此时该名字照常显示但不可点。
+     *
+     * 为空表示接口没给出任何歌手信息，界面上退化为
+     * 显示 [singer] 纯文本。
+     */
+    val artists: List<ArtistRef> = emptyList(),
 ) {
     /**
      * 时长格式化为 `m:ss`。
@@ -167,3 +183,17 @@ data class Artist(
     /** 头像（`union_cover` 或其他头像字段）。 */
     val avatarUrl: String? = null,
 )
+
+/**
+ * 歌曲里的「一位歌手」引用。
+ *
+ * `id` 可能为空：歌单接口只给拼接好的 `"A、B、C"` 字符串，
+ * 拆不出 id。此时名字照常显示，但不可点击进歌手页。
+ */
+data class ArtistRef(
+    val name: String,
+    val id: String = "",
+) {
+    /** 有 id 才能进歌手页。 */
+    val clickable: Boolean get() = id.isNotBlank()
+}
