@@ -77,8 +77,8 @@ class KrcLyricsTest {
 
     @Test
     fun `解析翻译数组`() {
-        // 构造一个真实的 language JSON：两行，第二行有翻译
-        val json = """{"content":[{"lyricContent":[[""],["测试翻译"]],"type":1,"language":0}]}"""
+        // 真实的 language JSON：type=1 才是译文
+        val json = """{"content":[{"type":1,"language":0,"lyricContent":[[""],["测试翻译"]]}]}"""
         val b64 = java.util.Base64.getEncoder().encodeToString(json.toByteArray(Charsets.UTF_8))
         val krc = """
             [ti:x]
@@ -94,8 +94,36 @@ class KrcLyricsTest {
     }
 
     @Test
-    fun `翻译行紧随原文且共用行时间`() {
-        val json = """{"content":[{"lyricContent":[["中文意思"]],"type":1,"language":0}]}"""
+    fun `按 type 区分罗马音与译文`() {
+        // 真实结构：content[0] 是罗马音(type=0)，content[1] 是译文(type=1)
+        val json = """
+            {"content":[
+              {"type":0,"language":0,"lyricContent":[["ha tsu "],["shi "]]},
+              {"type":1,"language":0,"lyricContent":[["不小心说出"],["想留在你身边"]]}
+            ]}
+        """.trimIndent()
+        val b64 = java.util.Base64.getEncoder().encodeToString(json.toByteArray(Charsets.UTF_8))
+        val krc = """
+            [ti:x]
+            [language:$b64]
+            [100,1000]<0,500,0>A
+            [2000,1000]<0,500,0>B
+        """.trimIndent()
+
+        val tr = KrcLyrics.extractTranslation(krc)
+        assertEquals(2, tr.size)
+        assertEquals("不小心说出", tr[0], "译文必须是 type=1 的内容，不是罗马音")
+        assertEquals("想留在你身边", tr[1])
+
+        val ro = KrcLyrics.extractRomanization(krc)
+        assertEquals(2, ro.size)
+        assertEquals("ha tsu", ro[0], "罗马音是 type=0，需拼接逐字数组")
+        assertEquals("shi", ro[1])
+    }
+
+    @Test
+    fun `译文行紧随原文且共用行时间`() {
+        val json = """{"content":[{"type":1,"language":0,"lyricContent":[["中文意思"]]}]}"""
         val b64 = java.util.Base64.getEncoder().encodeToString(json.toByteArray(Charsets.UTF_8))
         val krc = """
             [ti:x]

@@ -60,27 +60,67 @@ object KrcLyrics {
     }
 
     /**
-     * 从 KRC 里解出翻译行。
+     * 从 KRC 里解出**翻译**（中文译文）行。
      *
-     * @return 与歌词行对齐的翻译数组；无翻译返回空列表
+     * ## `[language:]` 里其实有两种东西
+     *
+     * 解码后是 JSON：
+     * ```json
+     * { "content": [
+     *     { "type": 0, "language": 0,
+     *       "lyricContent": [["ha tsu ","ne ","mi ","ku "], ...] },   // 罗马音
+     *     { "type": 1, "language": 0,
+     *       "lyricContent": [["不小心说出"], ["想留在你身边哪怕一刻也好"], ...] }  // 中文译文
+     * ] }
+     * ```
+     *
+     * **必须按 `type` 挑**：
+     * - `type = 0` → 罗马音（逐字读音，如 `ha tsu`）
+     * - `type = 1` → 翻译（中文意思）
+     *
+     * 早期实现直接取 `content[0]`，把罗马音当成了译文 ——
+     * 真机表现为歌词下方显示 `ha tsu` / `shi` / `kyo ku` 这些拼音。
+     *
+     * @return 与歌词行对齐的译文数组；无译文返回空列表
      */
-    fun extractTranslation(krc: String): List<String> {
+    fun extractTranslation(krc: String): List<String> =
+        extractLanguageLines(krc, wantType = 1)
+
+    /**
+     * 从 KRC 里解出**罗马音**行。
+     *
+     * 结构见 [extractTranslation]。罗马音是**逐字**数组
+     * （`["ha tsu ", "ne ", ...]`），这里拼接成整行。
+     */
+    fun extractRomanization(krc: String): List<String> =
+        extractLanguageLines(krc, wantType = 0)
+
+    /**
+     * 按 `type` 抽取 `[language:]` 里的行。
+     *
+     * @param wantType 0 = 罗马音，1 = 翻译
+     */
+    private fun extractLanguageLines(krc: String, wantType: Int): List<String> {
         val m = LANGUAGE_PATTERN.find(krc) ?: return emptyList()
-        val b64 = m.groupValues[1]
         return try {
-            val json = String(decodeBase64(b64), Charsets.UTF_8)
+            val json = String(decodeBase64(m.groupValues[1]), Charsets.UTF_8)
             val root = JsonLite.parse(json) ?: return emptyList()
-            // content 是数组，取第一个元素的 lyricContent
             val content = JsonLite.asArray(JsonLite.dig(root, "content")) ?: return emptyList()
-            val first = JsonLite.asObject(content.firstOrNull()) ?: return emptyList()
-            val lines = JsonLite.asArray(first["lyricContent"]) ?: return emptyList()
+
+            // 找到 type 匹配的那一项
+            val target = content
+                .mapNotNull { JsonLite.asObject(it) }
+                .firstOrNull { JsonLite.asInt(it["type"], -1) == wantType }
+                ?: return emptyList()
+
+            val lines = JsonLite.asArray(target["lyricContent"]) ?: return emptyList()
             lines.map { item ->
-                // 每项是 ["翻译文本"] 形式的数组
                 val arr = JsonLite.asArray(item)
                 if (arr != null) {
-                    arr.firstNotNullOfOrNull { JsonLite.asString(it) }?.takeIf { it.isNotBlank() } ?: ""
+                    // 逐字数组 → 拼接成整行
+                    arr.mapNotNull { JsonLite.asString(it) }.joinToString("").trim()
                 } else {
-                    JsonLite.asString(item)?.takeIf { it.isNotBlank() } ?: ""
+                    JsonLite.asString(item)?.trim().orEmpty()
                 }
             }
         } catch (e: Exception) {
