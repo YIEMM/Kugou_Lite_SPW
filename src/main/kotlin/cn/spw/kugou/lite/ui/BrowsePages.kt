@@ -236,6 +236,23 @@ internal fun SongRow(song: Song, onClick: () -> Unit) {
                 if (song.durationSec > 0) {
                     Text3(text = " · ${song.durationText}", color = Color(0xFF9A9A9A))
                 }
+                // 专辑名可点（有 albumId 时）；用「·」与时长分隔开，
+                // 避免和上面一行歌手挤在一起。
+                val album = song.albumName
+                if (!album.isNullOrBlank()) {
+                    Text3(text = " · ", color = Color(0xFF9A9A9A))
+                    if (song.albumId.isNotBlank()) {
+                        Text3(
+                            text = album,
+                            color = Color(0xFF6FA8DC),
+                            modifier = Modifier.clickable {
+                                PageNav.openAlbum(song.albumId, album)
+                            },
+                        )
+                    } else {
+                        Text3(text = album, color = Color(0xFF9A9A9A))
+                    }
+                }
             }
         }
     }

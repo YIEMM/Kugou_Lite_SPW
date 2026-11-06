@@ -261,6 +261,63 @@ object KugouApi {
      */
     internal fun parseSongForTest(obj: Any?): Song? = parseSong(obj)
 
+    // ---------------------------------------------------------------- 专辑
+
+    /**
+     * 专辑详情。
+     *
+     * ## 返回结构（实测 `/album/detail`）
+     *
+     * `data` 是**数组**（不是常见的对象），取第一项：
+     * `album_name` / `author_name` / `sizable_cover`（含 `{size}`）
+     * / `publish_date` / `type` / `authors[]`。
+     */
+    fun albumDetail(albumId: String): Album? {
+        if (albumId.isBlank()) return null
+        val json = get("/album/detail", mapOf("id" to albumId)) ?: return null
+
+        val item = JsonLite.asArray(JsonLite.dig(json, "data"))?.firstOrNull()
+            ?: JsonLite.dig(json, "data")
+            ?: return null
+        val obj = JsonLite.asObject(item) ?: return null
+
+        return Album(
+            id = albumId,
+            name = firstString(obj, "album_name", "albumname", "name") ?: "未知专辑",
+            artist = firstString(obj, "author_name", "singername", "singer_name") ?: "未知歌手",
+            // 优先 sizable_cover（带 {size} 占位），其次 cover（纯文件名）
+            coverTemplate = firstString(obj, "sizable_cover")
+                ?: firstString(obj, "cover")?.let { "http://imge.kugou.com/stdmusic/{size}/$it" },
+            publishDate = firstString(obj, "publish_date", "publishtime"),
+            type = firstString(obj, "type"),
+            songCount = firstInt(obj, "songcount", "song_count"),
+        )
+    }
+
+    /**
+     * 专辑曲目。
+     *
+     * ## 返回结构（实测 `/album/songs`）
+     *
+     * `data.songs` 是数组，字段风格与歌手接口类似：
+     * `songname` / `author_name` / `hash` / `album_id` / `duration`。
+     */
+    fun albumSongs(albumId: String, page: Int = 1, pageSize: Int = 50): List<Song> {
+        if (albumId.isBlank()) return emptyList()
+        val json = get(
+            "/album/songs",
+            mapOf("id" to albumId, "page" to page.toString(), "pagesize" to pageSize.toString()),
+        ) ?: return emptyList()
+
+        val list = JsonLite.asArray(JsonLite.dig(json, "data", "songs"))
+            ?: JsonLite.asArray(JsonLite.dig(json, "data"))
+            ?: return emptyList()
+
+        val songs = list.mapNotNull { parseSong(it) }
+        Diag.info(TAG, "专辑 $albumId → ${songs.size} 首")
+        return songs
+    }
+
     // ---------------------------------------------------------------- 歌手
     /**
      * 歌手的单曲列表。
@@ -641,6 +698,7 @@ object KugouApi {
             albumAudioId = albumAudioId,
             artistIds = artistIds,
             artists = artists,
+            albumId = firstString(obj, "album_id", "AlbumID", "albumid").orEmpty(),
         )
     }
 

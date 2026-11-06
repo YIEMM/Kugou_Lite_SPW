@@ -110,6 +110,13 @@ fun KugouLitePage() {
         ) {
             ArtistPage()
         }
+
+        KugouLiteTab.Album -> SubPage(
+            title = PageNav.detailTitle.ifBlank { "专辑" },
+            onBack = { PageNav.backHome() },
+        ) {
+            AlbumPage()
+        }
     }
 }
 

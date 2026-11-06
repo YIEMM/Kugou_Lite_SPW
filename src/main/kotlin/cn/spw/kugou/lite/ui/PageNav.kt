@@ -42,6 +42,10 @@ object PageNav {
     var detailRankId: String by mutableStateOf("")
         internal set
 
+    /** 二级页的专辑 id（空表示不是专辑页）。 */
+    var albumId: String by mutableStateOf("")
+        internal set
+
     /** 二级页的歌手 id（空表示不是歌手页）。 */
     var artistId: String by mutableStateOf("")
         internal set
@@ -86,6 +90,17 @@ object PageNav {
         tab = KugouLiteTab.Artist
     }
 
+    /** 打开专辑页。 */
+    fun openAlbum(albumId: String, title: String) {
+        this.albumId = albumId
+        detailRankId = ""
+        detailPlaylistId = ""
+        artistId = ""
+        detailTitle = title
+        returnTo = tab
+        tab = KugouLiteTab.Album
+    }
+
     /**
      * 返回上一级。
      *
@@ -94,7 +109,7 @@ object PageNav {
     fun backHome(): Boolean {
         when (tab) {
             KugouLiteTab.Home -> return false
-            KugouLiteTab.SongList, KugouLiteTab.Artist -> {
+            KugouLiteTab.SongList, KugouLiteTab.Artist, KugouLiteTab.Album -> {
                 tab = returnTo
                 clearDetail()
                 return true
@@ -111,6 +126,7 @@ object PageNav {
         detailRankId = ""
         detailPlaylistId = ""
         artistId = ""
+        albumId = ""
     }
 
     fun reset() {
@@ -145,6 +161,9 @@ enum class KugouLiteTab {
 
     /** 歌手页。 */
     Artist,
+
+    /** 专辑页。 */
+    Album,
 
     /** 设置。 */
     Settings,

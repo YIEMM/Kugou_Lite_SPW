@@ -68,6 +68,12 @@ data class Song(
      * 显示 [singer] 纯文本。
      */
     val artists: List<ArtistRef> = emptyList(),
+    /**
+     * 专辑 id。用于点击专辑名进入专辑页。
+     *
+     * 各接口基本都提供（`album_id`），但歌单接口可能没有，此时为空。
+     */
+    val albumId: String = "",
 ) {
     /**
      * 时长格式化为 `m:ss`。
@@ -183,6 +189,29 @@ data class Artist(
     /** 头像（`union_cover` 或其他头像字段）。 */
     val avatarUrl: String? = null,
 )
+
+/**
+ * 专辑。
+ *
+ * 字段来自 `/album/detail`（实测 `data` 是**数组**，取第一项）：
+ * `album_name` / `author_name` / `sizable_cover`（含 `{size}` 占位）
+ * / `publish_date` / `type` / `authors[]`。
+ */
+data class Album(
+    val id: String,
+    val name: String,
+    val artist: String,
+    /** 封面模板，含 `{size}` 占位。 */
+    val coverTemplate: String? = null,
+    val publishDate: String? = null,
+    /** 专辑类型，如「单曲专辑」「录音室专辑」。 */
+    val type: String? = null,
+    val songCount: Int = 0,
+) {
+    /** 取指定尺寸的封面地址。 */
+    fun coverUrl(px: Int = 500): String? =
+        coverTemplate?.replace("{size}", px.toString())
+}
 
 /**
  * 歌曲里的「一位歌手」引用。
