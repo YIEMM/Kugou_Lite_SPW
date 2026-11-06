@@ -183,6 +183,22 @@ data class LyricCandidate(
 )
 
 /** 歌单。 */
+/**
+ * 歌单。
+ *
+ * ## 自建 vs 收藏
+ *
+ * `/user/playlist` 的每条记录带 `type`：
+ * - `type = 0`：**自建**歌单（含「我喜欢」「默认收藏」）
+ * - `type = 1`：**收藏**别人的歌单
+ *
+ * 这两类在界面上要分开呈现 —— 自建是「我的」，收藏是「我收的」。
+ *
+ * ## 「我喜欢」的识别
+ *
+ * 酷狗把「我喜欢」做成一条固定 `listid=2` 的自建歌单。
+ * 所以 [isFavorites] 按 [listId] 判断，不按名字（名字可能被用户改）。
+ */
 data class Playlist(
     val id: String,
     val name: String,
@@ -190,7 +206,28 @@ data class Playlist(
     val songCount: Int,
     val playCount: Long,
     val description: String?,
-)
+    /** 数字形式的歌单 id（`listid`），用于写操作。 */
+    val listId: String = "",
+    /** `type=0` 自建，`type=1` 收藏。 */
+    val type: Int = 0,
+    /** 是否是「我喜欢」。 */
+    val isFavorites: Boolean = false,
+) {
+    /** 是否自建。 */
+    val isOwn: Boolean get() = type == 0
+
+    /**
+     * 取指定尺寸的封面地址。
+     *
+     * 酷狗 CDN 的封面地址多含 `{size}` 占位（如
+     * `http://c1.kgimg.com/stdmusic/{size}/xxx.jpg`），
+     * 把它替换成像素数即可。不含占位的地址原样返回。
+     */
+    fun coverAt(px: Int = 300): String? {
+        val url = coverUrl ?: return null
+        return if (url.contains("{size}")) url.replace("{size}", px.toString()) else url
+    }
+}
 
 /** 榜单。 */
 data class Rank(

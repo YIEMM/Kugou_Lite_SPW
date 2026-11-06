@@ -572,18 +572,39 @@ object KugouApi {
             // （`/playlist/track/all`）只认它，传 listid 会返回空。
             val id = firstString(obj, "global_collection_id", "specialid", "listid", "listId")
                 ?: return@mapNotNull null
+
+            val listId = firstString(obj, "listid", "listId").orEmpty()
+            val type = firstInt(obj, "type")
+            // 封面：`pic` 是主字段（含 {size} 占位）。
+            // 「我喜欢」这类系统歌单没有 pic，退回创建者头像。
+            val cover = firstString(obj, "pic", "img", "cover")
+                ?: firstString(obj, "create_user_pic")
             Playlist(
                 id = id,
                 name = firstString(obj, "specialname", "name", "listname") ?: "未命名歌单",
-                coverUrl = firstString(obj, "img", "pic", "cover"),
+                coverUrl = cover,
                 // 曲目数：count / m_count 是本接口的字段；songcount 是旧版字段，留着兜底
                 songCount = firstInt(obj, "count", "m_count", "songcount", "song_count"),
                 playCount = firstLong(obj, "playcount", "play_count"),
                 description = firstString(obj, "intro", "description"),
+                listId = listId,
+                type = type,
+                // 「我喜欢」= 固定 listid=2 的自建歌单（按 id 判断，不按名字：
+                // 用户可能给歌单改名，但 listid 不会变）
+                isFavorites = listId == MY_FAVORITES_LIST_ID && type == 0,
             )
         }
-        Diag.info(TAG, "我的歌单 → ${list.size} 个")
-        return list
+        // 排序：我喜欢置顶，然后自建，最后收藏的；同组内保持原顺序
+        val sorted = list.sortedWith(
+            compareByDescending<Playlist> { it.isFavorites }
+                .thenBy { if (it.isOwn) 0 else 1 },
+        )
+        Diag.info(
+            TAG,
+            "我的歌单 → ${sorted.size} 个（自建 ${sorted.count { it.isOwn }}，" +
+                "收藏 ${sorted.count { !it.isOwn }}）",
+        )
+        return sorted
     }
 
     /**

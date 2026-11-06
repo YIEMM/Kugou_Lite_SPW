@@ -46,26 +46,101 @@ import cn.spw.kugou.lite.sidecar.rememberAsyncState
 /**
  * 我的歌单。
  *
- * 需要登录（`/user/playlist` 走账号态）。未登录或 token 过期时显示引导文案
- * 而不是空列表 —— 否则用户会以为「没有歌单」而不是「需要重新登录」。
+ * ## 三段式分组
+ *
+ * 酷狗把「我喜欢」「默认收藏」都实现为**自建歌单**（`type=0`），
+ * 和真正的用户自建歌单混在一起。如果平铺展示，用户很难一眼找到
+ * 「我喜欢」—— 而这个恰恰是最常用的入口。
+ *
+ * 所以按重要度分段：
+ * 1. **我的收藏夹** —— 系统歌单（我喜欢 / 默认收藏），置顶带 ♥
+ * 2. **我的歌单** —— `type=0` 的用户自建
+ * 3. **收藏的歌单** —— `type=1`，别人创建、我收藏的
+ *
+ * 需要登录（`/user/playlist` 走账号态）。未登录或 token 过期时显示
+ * 引导文案而不是空列表 —— 否则用户会以为「没有歌单」而不是「需要重新登录」。
  */
 @Composable
 fun PlaylistPage() {
     val state = rememberAsyncState<List<Playlist>?>()
     LaunchedEffect(Unit) { state.load { KugouApi.userPlaylists() } }
 
-    ListScaffold(
-        state = state,
-        groupTitle = "我的歌单",
-        emptyText = "暂无歌单",
-        loginHint = "需要登录酷狗账号（token 可能已过期）",
-    ) { list ->
-        list.forEach { pl ->
-            ListRow(
-                title = pl.name,
-                subtitle = "${pl.songCount} 首",
-                onClick = { PageNav.openPlaylist(pl.id, pl.name) },
-            )
+    Column(Modifier.fillMaxWidth().padding(bottom = 16.dp)) {
+        when (val s = state.value) {
+            is Async.Idle, is Async.Loading -> StatusBlock("正在加载…")
+            is Async.Failure -> StatusBlock("加载失败：${s.message}")
+            is Async.Success -> {
+                val list = s.value
+                when {
+                    list == null -> StatusBlock(
+                        if (KugouApi.lastNeedsLogin) "需要登录酷狗账号（token 可能已过期）"
+                        else "加载失败：${KugouApi.lastError ?: "未知错误"}",
+                    )
+                    list.isEmpty() -> StatusBlock("暂无歌单")
+                    else -> {
+                        // 系统歌单（我喜欢 listid=2 / 默认收藏 listid=1）
+                        val system = list.filter { it.isFavorites || it.listId == "1" }
+                        val own = list.filter { it.isOwn && !system.contains(it) }
+                        val collected = list.filter { !it.isOwn }
+
+                        if (system.isNotEmpty()) {
+                            SaltGroupTitle("我的收藏夹")
+                            SaltCard(Modifier.fillMaxWidth().padding(horizontal = 16.dp)) {
+                                system.forEach { pl ->
+                                    CollectionRow(
+                                        coverUrl = pl.coverAt(300),
+                                        title = pl.name,
+                                        subtitle = "${pl.songCount} 首",
+                                        badge = if (pl.isFavorites) "♥" else null,
+                                        onClick = { PageNav.openPlaylist(pl.id, pl.name) },
+                                    )
+                                }
+                            }
+                        }
+
+                        if (own.isNotEmpty()) {
+                            SaltGroupTitle("我的歌单")
+                            SaltCard(Modifier.fillMaxWidth().padding(horizontal = 16.dp)) {
+                                own.forEach { pl ->
+                                    CollectionRow(
+                                        coverUrl = pl.coverAt(300),
+                                        title = pl.name,
+                                        subtitle = "${pl.songCount} 首",
+                                        onClick = { PageNav.openPlaylist(pl.id, pl.name) },
+                                    )
+                                }
+                            }
+                        }
+
+                        if (collected.isNotEmpty()) {
+                            SaltGroupTitle("收藏的歌单")
+                            SaltCard(Modifier.fillMaxWidth().padding(horizontal = 16.dp)) {
+                                collected.forEach { pl ->
+                                    CollectionRow(
+                                        coverUrl = pl.coverAt(300),
+                                        title = pl.name,
+                                        subtitle = "${pl.songCount} 首",
+                                        onClick = { PageNav.openPlaylist(pl.id, pl.name) },
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/** 一段状态提示（加载中/失败/空）。 */
+@Composable
+private fun StatusBlock(text: String) {
+    SaltCard(Modifier.fillMaxWidth().padding(horizontal = 16.dp)) {
+        Box(
+            Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 24.dp),
+            contentAlignment = Alignment.CenterStart,
+        ) {
+            Text3(text, color = Color(0xFF9A9A9A))
         }
     }
 }
@@ -76,18 +151,33 @@ fun RankPage() {
     val state = rememberAsyncState<List<Rank>?>()
     LaunchedEffect(Unit) { state.load { KugouApi.ranks() } }
 
-    ListScaffold(
-        state = state,
-        groupTitle = "排行榜",
-        emptyText = "暂无榜单",
-        loginHint = "需要登录酷狗账号",
-    ) { list ->
-        list.forEach { r ->
-            ListRow(
-                title = r.name,
-                subtitle = if (r.songCount > 0) "${r.songCount} 首" else "点击查看",
-                onClick = { PageNav.openRank(r.id, r.name) },
-            )
+    Column(Modifier.fillMaxWidth().padding(bottom = 16.dp)) {
+        when (val s = state.value) {
+            is Async.Idle, is Async.Loading -> StatusBlock("正在加载…")
+            is Async.Failure -> StatusBlock("加载失败：${s.message}")
+            is Async.Success -> {
+                val list = s.value
+                when {
+                    list == null -> StatusBlock(
+                        if (KugouApi.lastNeedsLogin) "需要登录酷狗账号"
+                        else "加载失败：${KugouApi.lastError ?: "未知错误"}",
+                    )
+                    list.isEmpty() -> StatusBlock("暂无榜单")
+                    else -> {
+                        SaltGroupTitle("排行榜")
+                        SaltCard(Modifier.fillMaxWidth().padding(horizontal = 16.dp)) {
+                            list.forEach { r ->
+                                CollectionRow(
+                                    coverUrl = r.coverUrl,
+                                    title = r.name,
+                                    subtitle = if (r.songCount > 0) "${r.songCount} 首" else "点击查看",
+                                    onClick = { PageNav.openRank(r.id, r.name) },
+                                )
+                            }
+                        }
+                    }
+                }
+            }
         }
     }
 }
