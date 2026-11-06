@@ -318,6 +318,149 @@ object KugouApi {
         return songs
     }
 
+    // ---------------------------------------------------------------- 收藏
+
+    /**
+     * 「我喜欢」歌单的固定 listid。
+     *
+     * ## 为什么是硬编码 2
+     *
+     * 酷狗把「我喜欢」实现为**一个自建歌单**（`type=0`）。
+     * 实测 `/user/playlist` 返回：
+     *
+     * ```
+     * listid=1  type=0  name=默认收藏
+     * listid=2  type=0  name=我喜欢      ← 固定 id
+     * listid=3  type=1  name=二十四节气   ← type=1 是收藏别人的歌单
+     * ```
+     *
+     * 实测在多个账号上 `listid=2` 恒为「我喜欢」，所以按 id 定位最可靠
+     * （按名字匹配会被改名的歌单干扰）。找不到时再回退到名字匹配。
+     */
+    private const val MY_FAVORITES_LIST_ID = "2"
+
+    /** 「我喜欢」歌单的 global_collection_id 形式。 */
+    private fun favoritesCollectionId(): String? {
+        val uid = AuthStore.userId ?: return null
+        return "collection_3_${uid}_${MY_FAVORITES_LIST_ID}_0"
+    }
+
+    /**
+     * 把歌曲加入「我喜欢」。
+     *
+     * ## 接口与参数
+     *
+     * `POST /playlist/tracks/add`（对应上游 `playlist_tracks_add.js`）：
+     * - `listid`：歌单 id（「我喜欢」= 2）
+     * - `data`：`歌名|hash|album_id|mixsongid`，多条用逗号分隔
+     * - `userid` / `token` 由服务端从 cookie 读取
+     *
+     * @return 成功返回 true
+     */
+    fun addToFavorites(song: Song): Boolean = addToPlaylist(MY_FAVORITES_LIST_ID, song)
+
+    /** 把歌曲移出「我喜欢」。 */
+    fun removeFromFavorites(song: Song): Boolean =
+        removeFromPlaylist(MY_FAVORITES_LIST_ID, song)
+
+    /**
+     * 把歌曲加入指定歌单。
+     *
+     * @param listId 歌单 id（数字形式，如 `2`）
+     */
+    fun addToPlaylist(listId: String, song: Song): Boolean {
+        if (listId.isBlank()) {
+            lastError = "歌单 id 为空"
+            return false
+        }
+        val hash = song.hash.ifBlank { song.albumAudioId }
+        if (hash.isBlank()) {
+            lastError = "该歌曲缺少 hash，无法收藏"
+            return false
+        }
+        if (!AuthStore.isLoggedIn) {
+            lastError = "需要登录酷狗账号"
+            lastNeedsLogin = true
+            return false
+        }
+
+        // data 格式：歌名|hash|album_id|mixsongid
+        // 歌名里若含 `|` 或 `,` 会破坏协议，先清掉
+        val safeName = song.title.replace('|', ' ').replace(',', ' ')
+        val albumId = song.albumId.ifBlank { "0" }
+        val mixId = song.mixSongId.ifBlank { "0" }
+        val data = "$safeName|$hash|$albumId|$mixId"
+
+        val json = post(
+            "/playlist/tracks/add",
+            body = mapOf(
+                "listid" to listId,
+                "data" to data,
+            ),
+        ) ?: return false
+
+        val status = JsonLite.asInt(JsonLite.dig(json, "status"), -1)
+        return if (status == 1) {
+            Diag.info(TAG, "已收藏「${song.title}」到歌单 $listId")
+            true
+        } else {
+            val err = JsonLite.asString(JsonLite.dig(json, "error"))
+                ?: JsonLite.asString(JsonLite.dig(json, "errmsg"))
+                ?: "status=$status"
+            lastError = "收藏失败：$err"
+            Diag.warn(TAG, "收藏失败「${song.title}」：$err")
+            false
+        }
+    }
+
+    /** 把歌曲从指定歌单移除。 */
+    fun removeFromPlaylist(listId: String, song: Song): Boolean {
+        if (listId.isBlank() || !AuthStore.isLoggedIn) {
+            lastError = if (!AuthStore.isLoggedIn) "需要登录酷狗账号" else "歌单 id 为空"
+            return false
+        }
+        val hash = song.hash.ifBlank { song.albumAudioId }
+        if (hash.isBlank()) {
+            lastError = "该歌曲缺少 hash"
+            return false
+        }
+
+        // 删除接口的 data 格式与添加不同：fileid|hash|album_id
+        // 上游 playlist_tracks_del 里用的是同样结构，这里传 hash 作为标识
+        val json = post(
+            "/playlist/tracks/del",
+            body = mapOf(
+                "listid" to listId,
+                "data" to "$hash|${song.albumId.ifBlank { "0" }}",
+            ),
+        ) ?: return false
+
+        val status = JsonLite.asInt(JsonLite.dig(json, "status"), -1)
+        return if (status == 1) {
+            Diag.info(TAG, "已取消收藏「${song.title}」")
+            true
+        } else {
+            lastError = "取消收藏失败：status=$status"
+            false
+        }
+    }
+
+    /**
+     * 判断歌曲是否已在「我喜欢」里。
+     *
+     * 通过读「我喜欢」的曲目列表 + hash 比对实现。
+     * 列表通常不长（几十到几百首），一次性取回即可。
+     */
+    fun isFavorite(song: Song): Boolean {
+        val cid = favoritesCollectionId() ?: return false
+        val target = song.hash.ifBlank { song.albumAudioId }
+        if (target.isBlank()) return false
+        return playlistSongs(cid, pageSize = 500).any {
+            it.hash.equals(target, ignoreCase = true) ||
+                it.albumAudioId.equals(target, ignoreCase = true)
+        }
+    }
+
     // ---------------------------------------------------------------- 歌手
     /**
      * 歌手的单曲列表。
@@ -699,6 +842,7 @@ object KugouApi {
             artistIds = artistIds,
             artists = artists,
             albumId = firstString(obj, "album_id", "AlbumID", "albumid").orEmpty(),
+            mixSongId = firstString(obj, "mixsongid", "mix_song_id", "MixSongID").orEmpty(),
         )
     }
 
@@ -817,6 +961,89 @@ object KugouApi {
                 return null
             }
             JsonLite.parse(body)
+        } catch (e: IOException) {
+            lastError = "网络错误：${e.message}"
+            Diag.warn(TAG, "$path 网络错误：${e.message}")
+            null
+        } catch (e: SecurityException) {
+            lastError = "网络权限被拒绝"
+            Diag.warn(TAG, "$path 权限错误：${e.message}")
+            null
+        } finally {
+            runCatching { conn?.disconnect() }
+        }
+    }
+
+    /**
+     * 发一个 POST 请求。
+     *
+     * ## 为什么把参数放在 query 而不是 body
+     *
+     * 上游的写接口（`/playlist/tracks/add` 等）虽然声明为 POST，
+     * 但参数解析走的是 `q_str(q, ...)` —— 即从 **query string** 取，
+     * 不是从 body。所以这里仍然拼 query，只是把方法换成 POST。
+     *
+     * 这与参考实现 `playlist_tracks_add.js` 的行为一致。
+     */
+    private fun post(path: String, body: Map<String, String>): Any? {
+        val http = SidecarManager.baseUrl
+        if (http == null) {
+            lastError = "在线服务未启动"
+            Diag.warn(TAG, "边车未就绪，跳过 $path")
+            return null
+        }
+
+        val query = buildString {
+            append(body.entries.joinToString("&") { (k, v) -> "${enc(k)}=${enc(v)}" })
+            AuthStore.token?.let { if (it.isNotBlank()) append("&token=${enc(it)}") }
+            AuthStore.userId?.let { if (it.isNotBlank()) append("&userid=${enc(it)}") }
+        }
+        val full = "$http$path" + if (query.isBlank()) "" else "?$query"
+
+        var conn: HttpURLConnection? = null
+        return try {
+            conn = (URI(full).toURL().openConnection() as HttpURLConnection).apply {
+                connectTimeout = CONNECT_TIMEOUT_MS
+                readTimeout = READ_TIMEOUT_MS
+                requestMethod = "POST"
+                doOutput = true
+                setRequestProperty("User-Agent", "KugouLite-SPW")
+                setRequestProperty("Content-Length", "0")
+                val cookie = buildString {
+                    AuthStore.token?.let { append("token=$it; ") }
+                    AuthStore.userId?.let { append("userid=$it; ") }
+                }
+                if (cookie.isNotBlank()) setRequestProperty("Cookie", cookie.trim())
+            }
+            // 显式写空 body，避免部分服务端拒绝无 body 的 POST
+            conn.outputStream.use { }
+
+            val code = conn.responseCode
+            val text = (if (code in 200..299) conn.inputStream else conn.errorStream)
+                ?.bufferedReader()?.use { it.readText() } ?: ""
+
+            val needsLogin = text.contains("\"errcode\":20028") ||
+                text.contains("本次请求需要验证") ||
+                text.contains("\"error_code\":20017") ||
+                text.contains("\"error_code\":20018")
+            if (needsLogin) {
+                lastNeedsLogin = true
+                lastError = "登录已失效，请重新扫码登录"
+                Diag.warn(TAG, "$path 需要重新登录（HTTP $code）")
+                return null
+            }
+            lastNeedsLogin = false
+
+            if (code !in 200..299) {
+                lastError = "服务返回 $code"
+                Diag.warn(TAG, "$path 返回 $code：${text.take(200)}")
+                return null
+            }
+            if (text.isBlank()) {
+                lastError = "空响应"
+                return null
+            }
+            JsonLite.parse(text)
         } catch (e: IOException) {
             lastError = "网络错误：${e.message}"
             Diag.warn(TAG, "$path 网络错误：${e.message}")

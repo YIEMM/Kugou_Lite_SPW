@@ -23,6 +23,13 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
 import cn.spw.kugou.lite.sidecar.ArtistRef
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.setValue
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
+import cn.spw.kugou.lite.sidecar.AuthStore
 import cn.spw.kugou.lite.diag.Diag
 import cn.spw.kugou.lite.host.PlaybackBridge
 import cn.spw.kugou.lite.sidecar.ApiExec
@@ -180,7 +187,7 @@ internal fun playSongsFromQueue(queue: List<Song>, index: Int) {
 private fun onSongPicked(queue: List<Song>, index: Int) = playSongsFromQueue(queue, index)
 
 /**
- * 一行歌曲：封面 + 歌名 + 歌手·时长。
+ * 一行歌曲：封面 + 歌名 + 歌手·时长 + 收藏按钮。
  *
  * 封面来自酷狗 CDN（`trans_param.union_cover` 的 `{size}` 已替换成 120px），
  * 由 [CoverLoader] 异步加载 + 两级缓存。加载中/失败时显示音符占位块，
@@ -194,6 +201,12 @@ private fun onSongPicked(queue: List<Song>, index: Int) = playSongsFromQueue(que
  * 现在按 [Song.artists] 逐位渲染：有 id 的用主色且可点，
  * 没 id 的（歌单接口不提供）用次要色且不可点，中间用顿号分隔。
  * 用 [FlowRow] 而不是 [Row]，歌手多时能自动换行，不会溢出。
+ *
+ * ## 收藏按钮
+ *
+ * 右侧的 ♡ / ♥ 点击切换「我喜欢」状态。用字符而不是图标，
+ * 避免依赖宿主图标资源（宿主图标类名被混淆，不稳定）。
+ * 未登录时点了会提示需要登录。
  */
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
@@ -206,7 +219,7 @@ internal fun SongRow(song: Song, onClick: () -> Unit) {
         verticalAlignment = Alignment.CenterVertically,
     ) {
         SongCover(song.coverUrl(120))
-        Column(Modifier.padding(start = 12.dp)) {
+        Column(Modifier.padding(start = 12.dp).weight(1f)) {
             Text3(text = song.title, color = Color(0xFFEDEDED))
 
             FlowRow(
@@ -255,7 +268,73 @@ internal fun SongRow(song: Song, onClick: () -> Unit) {
                 }
             }
         }
+        FavoriteButton(song)
     }
+}
+
+/**
+ * 收藏按钮。
+ *
+ * ## 状态来源
+ *
+ * 每次组合时读一次「我喜欢」列表判断是否已收藏 —— 简单但可靠。
+ * 列表通常几十首，命中内存缓存后开销可接受。
+ *
+ * ## 为什么用字符
+ *
+ * 宿主图标组件类名被混淆，跨版本不稳定。用字符 ♡/♥ 兼容性最好，
+ * 而且天然支持主题着色。
+ */
+@Composable
+private fun FavoriteButton(song: Song) {
+    var favorited by remember(song.hash) { mutableStateOf(false) }
+    var busy by remember(song.hash) { mutableStateOf(false) }
+
+    // 首次组合时查询一次收藏状态
+    LaunchedEffect(song.hash) {
+        if (!AuthStore.isLoggedIn) return@LaunchedEffect
+        favorited = withContext(Dispatchers.IO) {
+            runCatching { KugouApi.isFavorite(song) }.getOrDefault(false)
+        }
+    }
+
+    Text3(
+        text = when {
+            busy -> "…"
+            favorited -> "♥"
+            else -> "♡"
+        },
+        color = when {
+            favorited -> Color(0xFFE8736A)
+            else -> Color(0xFF6E6E6E)
+        },
+        modifier = Modifier
+            .padding(start = 8.dp)
+            .clickable(enabled = !busy) {
+                if (!AuthStore.isLoggedIn) {
+                    Diag.warn("[ui] 收藏需要先登录酷狗账号")
+                    return@clickable
+                }
+                busy = true
+                ApiExec.run({ r ->
+                    busy = false
+                    r.onSuccess { ok ->
+                        if (ok) {
+                            favorited = !favorited
+                        } else {
+                            Diag.warn("[ui] 收藏失败：${KugouApi.lastError ?: "未知原因"}")
+                        }
+                    }
+                    r.onFailure { busy = false }
+                }) {
+                    if (favorited) {
+                        KugouApi.removeFromFavorites(song)
+                    } else {
+                        KugouApi.addToFavorites(song)
+                    }
+                }
+            },
+    )
 }
 
 /** 列表行的小封面（48dp 圆角方块），无图时显示音符占位。 */

@@ -74,6 +74,14 @@ data class Song(
      * 各接口基本都提供（`album_id`），但歌单接口可能没有，此时为空。
      */
     val albumId: String = "",
+    /**
+     * 酷狗的 mixsongid（混合作品 id）。
+     *
+     * 收藏到歌单时 `/playlist/tracks/add` 需要它：
+     * `data` 参数格式是 `歌名|hash|album_id|mixsongid`。
+     * 缺失时传 0，服务端多数情况仍能识别（靠 hash）。
+     */
+    val mixSongId: String = "",
 ) {
     /**
      * 时长格式化为 `m:ss`。
