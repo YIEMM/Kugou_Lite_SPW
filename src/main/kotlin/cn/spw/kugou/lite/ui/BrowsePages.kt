@@ -178,7 +178,7 @@ private fun onSongPicked(queue: List<Song>, index: Int) {
             PlaybackBridge.play(song, stream, local)
         }
         // 登记队列并启动切歌监听：宿主切到下一首时自动补音频源
-        TrackWatcher.updateQueue(queue)
+        TrackWatcher.updateQueue(queue, index)
         TrackWatcher.start()
     }
 }

@@ -58,14 +58,25 @@ object AudioCache {
         val key = song.hash.ifBlank { song.albumAudioId }.ifBlank { return null }
         val ext = stream.extName.ifBlank { "mp3" }.lowercase()
         val target = File(cacheDir, "$key.$ext")
+        val metaStamp = File(cacheDir, "$key.meta")
 
-        // 已缓存且大小吻合 → 直接用
+        // 已缓存 → 直接用。
+        //
+        // **不要拿 target.length() 和 stream.fileSize 比**：写 ID3（封面 + 歌词）
+        // 会让文件变大（实测 4.2 MB → 4.4 MB），大小必然对不上。
+        // 早期实现因此每次都判定「文件坏了」→ 删掉重下 → 再写 ID3，
+        // 形成「每次都重新下载+重写整个文件」的死循环，
+        // 表现为「播放到 1 秒卡一下」。
+        //
+        // 现在的判据：只要文件存在且非空就算有效；元数据用 .meta 戳记控制。
         if (target.isFile && target.length() > 0) {
-            if (stream.fileSize <= 0 || target.length() == stream.fileSize) {
-                return target
+            val stamp = "${target.length()}:${target.lastModified()}"
+            if (!metaStamp.isFile || metaStamp.readText().trim() != stamp) {
+                // 只在没写过元数据时补一次
+                embedCover(song, target)
+                runCatching { metaStamp.writeText("${target.length()}:${target.lastModified()}") }
             }
-            // 大小不符说明上次写坏了，删掉重下
-            target.delete()
+            return target
         }
 
         val part = File(cacheDir, "$key.$ext.part")
@@ -85,6 +96,11 @@ object AudioCache {
                         // 顺手补内嵌封面：宿主播放条/播放页的封面读的就是
                         // 本地音频文件的内嵌图（TagParser.readImage）。
                         embedCover(song, target)
+                        // 记戳：下次命中缓存时不再重复写 ID3（写 ID3 要重写整个文件，
+                        // 是「播放到 1 秒卡一下」的根因）
+                        runCatching {
+                            metaStamp.writeText("${target.length()}:${target.lastModified()}")
+                        }
                         target
                     } else {
                         null
@@ -165,13 +181,18 @@ object AudioCache {
             val isKrc = KrcLyrics.isKrc(lyrics)
             val text = if (isKrc) KrcLyrics.toEnhancedLrc(lyrics) else lyrics
             val lrc = File(audioFile.parentFile, audioFile.nameWithoutExtension + ".lrc")
+
+            // 已写过且内容一致 → 跳过（避免每次播放都重写磁盘）
+            if (lrc.isFile && lrc.length().toLong() == text.toByteArray(Charsets.UTF_8).size.toLong()) {
+                return true
+            }
+
             lrc.writeText(text, Charsets.UTF_8)
 
             if (isKrc) {
-                // 原始 KRC 也留一份（剥掉翻译段），便于排查
-                runCatching {
-                    File(audioFile.parentFile, audioFile.nameWithoutExtension + ".krc")
-                        .writeText(KrcLyrics.sanitize(lyrics), Charsets.UTF_8)
+                val krcFile = File(audioFile.parentFile, audioFile.nameWithoutExtension + ".krc")
+                if (!krcFile.isFile) {
+                    runCatching { krcFile.writeText(KrcLyrics.sanitize(lyrics), Charsets.UTF_8) }
                 }
                 Diag.info(TAG, "已写入逐字歌词 ${lrc.name}（${text.length} 字符，KRC 源 ${lyrics.length} 字符）")
             } else {

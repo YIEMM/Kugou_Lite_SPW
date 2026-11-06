@@ -14,6 +14,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import cn.spw.kugou.lite.diag.Diag
 import cn.spw.kugou.lite.host.PlaybackBridge
+import cn.spw.kugou.lite.host.TrackWatcher
 import cn.spw.kugou.lite.sidecar.ApiExec
 import cn.spw.kugou.lite.sidecar.Async
 import cn.spw.kugou.lite.sidecar.AudioCache
@@ -64,7 +65,7 @@ fun KugouLitePage() {
                             val lrc = KugouApi.lyricByHash(song.hash)
                             if (!lrc.isNullOrBlank() && local != null) {
                                 Id3CoverWriter.writeLyrics(local, lrc)
-                AudioCache.writeLrcSidecar(local, lrc)
+                                AudioCache.writeLrcSidecar(local, lrc)
                             }
                         }
                         val ok = PlaybackBridge.playQueue(queue, index, { s -> KugouApi.streamUrl(s) }, local)
@@ -72,6 +73,9 @@ fun KugouLitePage() {
                             Diag.warn("[page] 建立队列失败，回退单曲播放")
                             PlaybackBridge.play(song, stream, local)
                         }
+                        // 登记队列并启动切歌监听（搜索页点歌同样需要）
+                        TrackWatcher.updateQueue(queue, index)
+                        TrackWatcher.start()
                     }
                 }
             })

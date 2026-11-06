@@ -66,10 +66,16 @@ object TrackWatcher {
      * 登记当前播放队列，供切歌时查表。
      *
      * @param songs 队列里的全部歌曲（顺序与建队列时一致）
+     * @param startIndex 本次建队列时**已经处理好**的起始曲目下标。
+     *
+     * 把起始曲目预先标记为「已处理」很重要：点歌流程里已经完成取流、
+     * 下载、写 ID3、绑定音频源，监听启动后如果又对同一首重做一遍，
+     * 就会在播放开始约 1 秒内触发一次整文件重写 —— 表现为「卡一下」。
      */
-    fun updateQueue(songs: List<Song>) {
+    fun updateQueue(songs: List<Song>, startIndex: Int = 0) {
         queueMap = songs.associateBy { trackIdOf(it) }
-        Diag.info(TAG, "已登记队列 ${queueMap.size} 首")
+        songs.getOrNull(startIndex)?.let { lastHandled.set(trackIdOf(it)) }
+        Diag.info(TAG, "已登记队列 ${queueMap.size} 首（起始曲目已标记为已处理）")
     }
 
     fun start() {
