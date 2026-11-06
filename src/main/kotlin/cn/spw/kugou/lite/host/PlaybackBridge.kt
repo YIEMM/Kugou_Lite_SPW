@@ -252,15 +252,14 @@ object PlaybackBridge {
 
             runCatching { pauseMethod?.invoke(ctrl) }
 
-            // 一次性建整条队列
+            // **一次性建整条队列，当前项的 path 已经是正确的**，
+            // 不再额外 updateMediaItems / setPlaybackAudioSource。
+            //
+            // 早期实现在 setQueueList 之后又调了一次
+            // updateItem + setAudioSource + prepare + play，
+            // 导致同一首歌被加载两次：宿主开始播 0.3 秒后，
+            // 第二次加载把它重置回 0 秒重新开始 —— 就是用户说的「抖动」。
             setQueueList?.invoke(ctrl, items, idx)
-
-            // 更新当前项（确保 path 是刚准备好的那个）
-            val current = items.getOrNull(idx) ?: return false
-            updateItem(ctrl, current)
-
-            val trackId = buildTrackId(currentSong)
-            setAudioSourceMethod?.invoke(ctrl, trackId, currentPath, 0L, true)
             prepareMethod?.invoke(ctrl)
             playMethod?.invoke(ctrl)
 
@@ -282,6 +281,12 @@ object PlaybackBridge {
      * 串行执行，避免同时下载多首把带宽和磁盘打满。
      * 每补好一首就 `updateMediaItems` 更新队列项，宿主马上就能加载
      * 它的封面与歌词。
+     *
+     * ## 为什么跳过两首
+     *
+     * - `skipIndex`（当前正在播的）：**绝不能更新**，`updateMediaItems`
+     *   会打断正在播放的音频（表现为播放几百毫秒后被重置回 0 秒）。
+     * - 已经命中缓存的：path 本来就正确，不需要更新。
      */
     private fun fillQueuePathsAsync(
         ctrl: Any,
@@ -293,13 +298,6 @@ object PlaybackBridge {
             for ((i, s) in songs.withIndex()) {
                 if (i == skipIndex) continue
                 try {
-                    // 已有可用缓存就不重复下载
-                    val existing = cachedLocalPath(s)
-                    if (existing != null) {
-                        // 只更新队列项，让宿主能读到封面/歌词
-                        newMediaItem(s, buildTrackId(s), existing)?.let { updateItem(ctrl, it) }
-                        continue
-                    }
                     val stream = resolveStream(s) ?: continue
                     // 先取歌词，再让 AudioCache 一并补齐（音频 + 封面 + 逐字歌词）
                     val lrc = runCatching { KugouApi.lyricByHash(s.hash) }.getOrNull()
@@ -336,24 +334,25 @@ object PlaybackBridge {
     }
 
     /**
-     * 切歌后重新登记音频源。
+     * 切歌后确保新曲目的音频源可用。
      *
-     * ## 为什么必须同时更新队列项
+     * ## 只更新队列项，不强推播放
      *
-     * 只调用 `setPlaybackAudioSource` 是不够的：队列里那一项的 `path`
-     * 仍是空占位，宿主在某些时机（如重新加载、拖进度、切回来）会
-     * 按队列项的 path 去找音频，找不到就报「未载入歌曲」，
-     * 同时也读不到封面与歌词。
+     * 宿主自己的切歌流程已经会加载队列里下一项的 path。我们只需要
+     * 保证那一项的 path 是有效的本地文件即可。
      *
-     * 所以这里做三件事：
-     * 1. `updateMediaItems(item)` —— 把队列项的 path 换成真实本地文件
-     * 2. `setPlaybackAudioSource(trackId, path, 0, true)` —— 让宿主立即切到该源
-     * 3. `prepare()` + `play()` 让它真正出声
+     * 早期实现在这里又调了 `setPlaybackAudioSource + prepare + play`，
+     * 与宿主自己的加载叠加，导致：
+     * - 播放几百毫秒后被重置回 0 秒（用户反馈的「抖动」）
+     * - 或直接打断播放
+     *
+     * 所以现在：
+     * - path 已正确（命中缓存）→ 什么都不做
+     * - path 需要更新 → 只 `updateMediaItems`，让宿主按新 path 加载
      */
     fun rebindCurrent(song: Song, stream: StreamInfo, localFile: File?): Boolean {
         val ctrl = controller ?: ensureController() ?: return false
         val trackId = buildTrackId(song)
-        // 有本地文件就用它；否则必须要有可用的流地址
         val path = localFile?.absolutePath
             ?: stream.url.takeIf { it.isNotBlank() }
             ?: run {
@@ -361,22 +360,15 @@ object PlaybackBridge {
                 return false
             }
         return try {
-            // 1) 先更新队列项，让 path 不再是空占位
             val item = newMediaItem(song, trackId, path)
-            if (item != null) updateItem(ctrl, item)
-
-            // 2) 切换音频源
-            setAudioSourceMethod?.invoke(ctrl, trackId, path, 0L, true)
-
-            // 3) 准备并播放
-            prepareMethod?.invoke(ctrl)
-            playMethod?.invoke(ctrl)
-
-            Diag.info(TAG, "已重新绑定音频源「${song.title}」path=${if (localFile != null) "本地" else "HTTP"}")
+            if (item != null) {
+                updateItem(ctrl, item)
+                Diag.info(TAG, "已更新队列项「${song.title}」path=${if (localFile != null) "本地" else "HTTP"}")
+            }
             true
         } catch (t: Throwable) {
             val cause = (t as? InvocationTargetException)?.targetException ?: t
-            Diag.warn(TAG, "重新绑定失败：${cause.javaClass.simpleName}: ${cause.message}")
+            Diag.warn(TAG, "更新队列项失败：${cause.javaClass.simpleName}: ${cause.message}")
             false
         }
     }
