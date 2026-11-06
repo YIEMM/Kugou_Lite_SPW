@@ -82,6 +82,20 @@ data class Song(
      * 缺失时传 0，服务端多数情况仍能识别（靠 hash）。
      */
     val mixSongId: String = "",
+    /**
+     * 歌在歌单里的**文件 id**（`fileid`）。
+     *
+     * ## 为什么删除必须靠它
+     *
+     * `/playlist/tracks/del` 的参数是 `fileids`，值是 fileid（数字），
+     * 不是 hash。传 hash 时上游会当成「按 hash 查找」处理，
+     * 但实测常常返回 status=0（没删掉）。
+     *
+     * fileid 只有**读取歌单曲目**时才返回（`/playlist/track/all`
+     * 的每条记录里带 `fileid`），搜索结果里没有。
+     * 所以为 0 表示「这首歌不是从歌单里读出来的」。
+     */
+    val fileId: Long = 0L,
 ) {
     /**
      * 时长格式化为 `m:ss`。

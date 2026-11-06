@@ -340,10 +340,7 @@ object KugouApi {
     private const val MY_FAVORITES_LIST_ID = "2"
 
     /** 「我喜欢」歌单的 global_collection_id 形式。 */
-    private fun favoritesCollectionId(): String? {
-        val uid = AuthStore.userId ?: return null
-        return "collection_3_${uid}_${MY_FAVORITES_LIST_ID}_0"
-    }
+    private fun favoritesCollectionId(): String? = buildCollectionId(MY_FAVORITES_LIST_ID)
 
     /**
      * 把歌曲加入「我喜欢」。
@@ -413,36 +410,85 @@ object KugouApi {
         }
     }
 
-    /** 把歌曲从指定歌单移除。 */
+    /**
+     * 把歌曲从指定歌单移除。
+     *
+     * ## 参数是 fileid，不是 hash
+     *
+     * 上游 `playlist_tracks_del.js` → `POST /playlist/tracks/del`：
+     * - 参数名是 **`fileids`**（不是 `data`）
+     * - 值是 fileid 数字，多条用逗号分隔
+     *
+     * 早期实现传 `data=hash|album_id`，上游根本没识别，返回 status=0
+     * —— 表现为「点取消收藏没反应」。
+     *
+     * ## fileid 从哪来
+     *
+     * 只有**读取歌单曲目**时才返回。所以：
+     * 1. 歌曲对象自带 fileId（从歌单读出来时）→ 直接用
+     * 2. 否则先去歌单里按 hash 查一遍拿 fileid
+     */
     fun removeFromPlaylist(listId: String, song: Song): Boolean {
         if (listId.isBlank() || !AuthStore.isLoggedIn) {
             lastError = if (!AuthStore.isLoggedIn) "需要登录酷狗账号" else "歌单 id 为空"
             return false
         }
-        val hash = song.hash.ifBlank { song.albumAudioId }
-        if (hash.isBlank()) {
-            lastError = "该歌曲缺少 hash"
-            return false
+
+        // 1) 优先用歌曲对象自带的 fileId
+        var fileId = song.fileId
+
+        // 2) 没有就去歌单里查
+        if (fileId <= 0L) {
+            fileId = lookupFileId(listId, song) ?: run {
+                lastError = "在歌单里找不到这首歌（可能已不在）"
+                Diag.warn(TAG, "取消收藏失败：歌单 $listId 里找不到「${song.title}」")
+                return false
+            }
         }
 
-        // 删除接口的 data 格式与添加不同：fileid|hash|album_id
-        // 上游 playlist_tracks_del 里用的是同样结构，这里传 hash 作为标识
         val json = post(
             "/playlist/tracks/del",
             body = mapOf(
                 "listid" to listId,
-                "data" to "$hash|${song.albumId.ifBlank { "0" }}",
+                "fileids" to fileId.toString(),
             ),
         ) ?: return false
 
+        // 上游成功时 data.status=1
         val status = JsonLite.asInt(JsonLite.dig(json, "status"), -1)
+            .let { if (it == -1) JsonLite.asInt(JsonLite.dig(json, "data", "status"), -1) else it }
+
         return if (status == 1) {
-            Diag.info(TAG, "已取消收藏「${song.title}」")
+            Diag.info(TAG, "已取消收藏「${song.title}」（fileid=$fileId）")
             true
         } else {
             lastError = "取消收藏失败：status=$status"
+            Diag.warn(TAG, "取消收藏失败「${song.title}」：status=$status")
             false
         }
+    }
+
+    /**
+     * 在歌单里按 hash 查 fileid。
+     *
+     * @return 找到返回 fileid，否则 null
+     */
+    private fun lookupFileId(listId: String, song: Song): Long? {
+        val target = song.hash.ifBlank { song.albumAudioId }
+        // 歌单 collection id 形式：collection_3_<uid>_<listid>_0
+        val cid = buildCollectionId(listId) ?: return null
+        val songs = playlistSongs(cid, pageSize = 500)
+        val hit = songs.firstOrNull {
+            (target.isNotBlank() && it.hash.equals(target, ignoreCase = true)) ||
+                (song.mixSongId.isNotBlank() && it.mixSongId == song.mixSongId)
+        } ?: return null
+        return hit.fileId.takeIf { it > 0 }
+    }
+
+    /** 拼歌单的 global_collection_id。 */
+    private fun buildCollectionId(listId: String): String? {
+        val uid = AuthStore.userId ?: return null
+        return "collection_3_${uid}_${listId}_0"
     }
 
     /**
@@ -843,6 +889,7 @@ object KugouApi {
             artists = artists,
             albumId = firstString(obj, "album_id", "AlbumID", "albumid").orEmpty(),
             mixSongId = firstString(obj, "mixsongid", "mix_song_id", "MixSongID").orEmpty(),
+            fileId = firstLong(obj, "fileid", "file_id", "FileID"),
         )
     }
 
