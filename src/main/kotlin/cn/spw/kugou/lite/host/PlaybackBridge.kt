@@ -272,21 +272,46 @@ object PlaybackBridge {
     /**
      * 切歌后重新登记音频源。
      *
-     * 宿主切到队列里的下一首时，那首的 path 还是空占位，需要在这里
-     * 取流 + 下载 + 重新登记。由 UI 侧在检测到曲目变化时调用。
+     * ## 为什么必须同时更新队列项
+     *
+     * 只调用 `setPlaybackAudioSource` 是不够的：队列里那一项的 `path`
+     * 仍是空占位，宿主在某些时机（如重新加载、拖进度、切回来）会
+     * 按队列项的 path 去找音频，找不到就报「未载入歌曲」。
+     *
+     * 所以这里做两件事：
+     * 1. `updateMediaItems(item)` —— 把队列项的 path 换成真实的本地文件
+     * 2. `setPlaybackAudioSource(trackId, path, 0, true)` —— 让宿主立即切到该源
+     *
+     * 然后 `prepare()` + `play()` 让它真正出声。
      */
     fun rebindCurrent(song: Song, stream: StreamInfo, localFile: File?): Boolean {
         val ctrl = controller ?: ensureController() ?: return false
         val trackId = buildTrackId(song)
         val path = localFile?.absolutePath ?: stream.url
         return try {
+            // 1) 先更新队列项，让 path 不再是空占位
+            val item = newMediaItem(song, trackId, path)
+            if (item != null) {
+                updateMediaItemsMethod?.let { m ->
+                    val paramType = m.parameterTypes[0]
+                    val arr = java.lang.reflect.Array.newInstance(paramType.componentType, 1)
+                    java.lang.reflect.Array.set(arr, 0, item)
+                    m.invoke(ctrl, arr)
+                }
+            }
+
+            // 2) 切换音频源
             setAudioSourceMethod?.invoke(ctrl, trackId, path, 0L, true)
+
+            // 3) 准备并播放
             prepareMethod?.invoke(ctrl)
             playMethod?.invoke(ctrl)
-            Diag.info(TAG, "已重新绑定音频源「${song.title}」")
+
+            Diag.info(TAG, "已重新绑定音频源「${song.title}」path=${if (localFile != null) "本地" else "HTTP"}")
             true
         } catch (t: Throwable) {
-            Diag.warn(TAG, "重新绑定失败：${t.javaClass.simpleName}")
+            val cause = (t as? InvocationTargetException)?.targetException ?: t
+            Diag.warn(TAG, "重新绑定失败：${cause.javaClass.simpleName}: ${cause.message}")
             false
         }
     }

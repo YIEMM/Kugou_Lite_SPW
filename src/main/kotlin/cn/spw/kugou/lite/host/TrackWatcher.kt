@@ -45,6 +45,18 @@ object TrackWatcher {
 
     private const val POLL_MS = 700L
 
+    /**
+     * 同一首歌的重绑冷却时间。
+     *
+     * 宿主可能在切歌瞬间多次上报同一个 id（内部状态抖动、快速连点等）。
+     * 每次重绑都要取流 + 可能下载 + prepare/play，重复执行会卡顿，
+     * 也可能打断刚开始的播放。30 秒足够覆盖这些抖动。
+     */
+    private const val REBIND_COOLDOWN_MS = 30_000L
+
+    /** 记录每首歌最近一次绑定的时间戳（id → ms）。 */
+    private val lastBoundAt = java.util.concurrent.ConcurrentHashMap<String, Long>()
+
     private val executor = Executors.newSingleThreadExecutor { r ->
         Thread(r, "kugou-lite-watch").apply {
             isDaemon = true
@@ -117,13 +129,23 @@ object TrackWatcher {
         val previous = lastHandled.get()
         if (currentId == previous) return
 
-        // 首次拿到（例如刚建完队列）也要处理一次，确保当前曲目已绑定
         lastHandled.set(currentId)
 
         val song = queueMap[currentId] ?: run {
             Diag.warn(TAG, "切到未知曲目 $currentId（不在已登记队列里）")
             return
         }
+
+        // 防止「刚绑定完又被判定为切歌」的抖振：如果这首歌最近刚处理过
+        // （例如用户快速连点、或宿主内部短暂回跳），30 秒内不重复绑定。
+        val now = System.currentTimeMillis()
+        val lastMs = lastBoundAt[currentId] ?: 0L
+        if (now - lastMs < REBIND_COOLDOWN_MS) {
+            Diag.info(TAG, "跳过重复绑定「${song.title}」（${now - lastMs}ms 内已处理）")
+            return
+        }
+        lastBoundAt[currentId] = now
+
         Diag.info(TAG, "检测到切歌：「${song.title}」")
 
         // 后台补音频源（本方法已在监听线程，直接同步做）
