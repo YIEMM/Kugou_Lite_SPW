@@ -49,6 +49,24 @@ object Id3CoverWriter {
     private const val MAX_COVER_BYTES = 2 * 1024 * 1024
 
     /**
+     * 文件里是否已有 APIC（封面）帧。
+     *
+     * 供调用方在写之前判断，避免每次播放都重写整个音频文件 ——
+     * 那是「播放到 1 秒卡一下」的直接原因。
+     */
+    fun hasApicFrame(audioFile: File): Boolean {
+        if (!audioFile.isFile || audioFile.length() < 10) return false
+        return try {
+            RandomAccessFile(audioFile, "r").use { raf ->
+                val header = readHeader(raf) ?: return false
+                hasApic(raf, header)
+            }
+        } catch (e: Exception) {
+            false
+        }
+    }
+
+    /**
      * 把封面写入 mp3 的 ID3v2.3 APIC 帧。
      *
      * 幂等：文件里已有 APIC 帧时直接返回 true，不重复写。

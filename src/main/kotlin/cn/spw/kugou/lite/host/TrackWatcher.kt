@@ -5,6 +5,7 @@ import cn.spw.kugou.lite.sidecar.AudioCache
 import cn.spw.kugou.lite.sidecar.Id3CoverWriter
 import cn.spw.kugou.lite.sidecar.KugouApi
 import cn.spw.kugou.lite.sidecar.Song
+import cn.spw.kugou.lite.sidecar.StreamInfo
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicReference
@@ -148,21 +149,41 @@ object TrackWatcher {
 
         Diag.info(TAG, "检测到切歌：「${song.title}」")
 
-        // 后台补音频源（本方法已在监听线程，直接同步做）
+        // 快速路径：队列补齐时已经下载好本地文件，直接用它，不再取流。
+        // 这能显著减少切歌延迟（尤其对需要收藏页解锁的受限曲目，
+        // 每次取流要 2 个网络往返）。
+        val cached = AudioCache.localFileOrNull(song)
+        if (cached != null) {
+            Diag.info(TAG, "命中本地缓存，跳过取流「${song.title}」")
+            PlaybackBridge.rebindCurrent(song, FAKE_STREAM_FOR_LOCAL, cached)
+            return
+        }
+
+        // 慢路径：没有本地文件，取流 + 下载
         val stream = KugouApi.streamUrl(song) ?: run {
             Diag.warn(TAG, "切歌补流失败：${KugouApi.lastError ?: "未知原因"}")
             return
         }
-        val local = AudioCache.ensureLocal(song, stream)
-        runCatching {
-            val lrc = KugouApi.lyricByHash(song.hash)
-            if (!lrc.isNullOrBlank() && local != null) {
-                Id3CoverWriter.writeLyrics(local, lrc)
-                AudioCache.writeLrcSidecar(local, lrc)
-            }
-        }
+        // 先取歌词，再让 AudioCache 一并补齐（音频 + 封面 + 逐字歌词）
+        val lrc = runCatching { KugouApi.lyricByHash(song.hash) }.getOrNull()
+        val local = AudioCache.ensureLocal(song, stream, lrc)
         PlaybackBridge.rebindCurrent(song, stream, local)
     }
+
+    /**
+     * 命中本地缓存时用的占位 [StreamInfo]。
+     *
+     * 此时不需要真实流地址（path 已指向本地文件），但
+     * [PlaybackBridge.rebindCurrent] 的签名要求一个非空 StreamInfo。
+     */
+    private val FAKE_STREAM_FOR_LOCAL = StreamInfo(
+        url = "",
+        backupUrls = emptyList(),
+        bitRate = 0,
+        fileSize = 0,
+        extName = "mp3",
+        durationSec = 0,
+    )
 
     /**
      * 读当前播放曲目的 id。

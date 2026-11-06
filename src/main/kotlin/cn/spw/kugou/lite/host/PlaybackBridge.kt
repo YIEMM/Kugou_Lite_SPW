@@ -1,6 +1,8 @@
 package cn.spw.kugou.lite.host
 
 import cn.spw.kugou.lite.diag.Diag
+import cn.spw.kugou.lite.sidecar.AudioCache
+import cn.spw.kugou.lite.sidecar.KugouApi
 import cn.spw.kugou.lite.sidecar.Song
 import cn.spw.kugou.lite.sidecar.StreamInfo
 import java.io.File
@@ -192,47 +194,57 @@ object PlaybackBridge {
     /**
      * 播放整个列表（歌单 / 榜单 / 每日推荐）。
      *
-     * ## 与单曲播放的区别
+     * ## 关键：队列里**每一项**都要有可用的 path
      *
-     * 单曲用 `setPlaybackQueue(listOf(item), 0)` 建一条只有一首的队列；
-     * 这里把**整个列表**一次性建进队列，之后宿主自己的「下一首」就能工作。
+     * 宿主在以下时机都会按「队列项的 path」去加载音频与元数据
+     * （封面走 `TagParser.readImage(path)`，歌词走同名 `.lrc`）：
      *
-     * ## 音频源的现实约束
+     * - 切歌
+     * - 拖动进度条
+     * - 切回上一首
+     * - 播放结束时自动进下一首
      *
-     * 宿主的音频源是按 trackId 登记的（`setPlaybackAudioSource`），
-     * 一次只能指向一个地址。所以：
-     * - **当前这首**用本地文件（保证立即出声）
-     * - **其余曲目**先把 path 写成 HTTP 直链，切歌时由
-     *   [cn.spw.kugou.lite.ui] 侧的「切歌监听」再补登记本地文件
+     * 早期实现只有当前曲目有真实 path，其余是空占位，于是：
+     * - 切过去 → 找不到文件 → 弹「未载入歌曲」
+     * - 封面/歌词读不到 → 播放栏一直是 ♪ 占位、没有逐字歌词
      *
-     * 这样队列是完整的、可翻页的，而不是「只能播一首」。
+     * 现在的做法：**为整个队列预先取流并缓存**（后台串行做，
+     * 命中缓存时几乎零开销）。这样每一项的 path 都是真实本地文件，
+     * 宿主在任何时机都能正常加载。
+     *
+     * ## 为什么不在主线程全量下载
+     *
+     * 一个 50 首的榜单会下载几百 MB。所以：
+     * - 当前曲目**同步**保证可用（调用方已准备好）再建队列
+     * - 其余曲目**异步**在后台逐个补齐，并更新队列项
      *
      * @param songs 整个列表
      * @param startIndex 从第几首开始播
+     * @param resolveStream 取流函数
      * @param localFile 已下载好的当前曲目（可为 null）
      * @return 成功返回 true
      */
     fun playQueue(
         songs: List<Song>,
         startIndex: Int,
-        streamOf: (Song) -> StreamInfo?,
+        resolveStream: (Song) -> StreamInfo?,
         localFile: File?,
     ): Boolean {
         if (songs.isEmpty()) return false
         val idx = startIndex.coerceIn(0, songs.lastIndex)
         val ctrl = ensureController() ?: return false
         return try {
-            // 为每首歌构造 MediaItem。只有起始曲目拿得到已下载的本地文件，
-            // 其余用 HTTP 直链占位（切歌时再补）。
+            // 当前曲目：优先用调用方准备好的本地文件，否则现取
+            val currentSong = songs[idx]
+            val currentPath = localFile?.absolutePath
+                ?: resolveStream(currentSong)?.url
+                ?: return false
+
+            // 其余曲目：先用已知的本地缓存路径（若是之前播过的），
+            // 没有就留空，由后台补齐。
             val items = songs.mapIndexed { i, s ->
                 val trackId = buildTrackId(s)
-                val path = if (i == idx && localFile != null) {
-                    localFile.absolutePath
-                } else {
-                    // 队列里的其他曲目：先放一个稳定的占位 path。
-                    // 真正播放时由切歌监听替换成本地文件。
-                    ""
-                }
+                val path = if (i == idx) currentPath else cachedLocalPath(s) ?: ""
                 newMediaItem(s, trackId, path)
             }.filterNotNull()
 
@@ -243,29 +255,83 @@ object PlaybackBridge {
             // 一次性建整条队列
             setQueueList?.invoke(ctrl, items, idx)
 
-            // 更新当前项的 path 为本地文件
+            // 更新当前项（确保 path 是刚准备好的那个）
             val current = items.getOrNull(idx) ?: return false
-            updateMediaItemsMethod?.let { m ->
-                val paramType = m.parameterTypes[0]
-                val arr = java.lang.reflect.Array.newInstance(paramType.componentType, 1)
-                java.lang.reflect.Array.set(arr, 0, current)
-                m.invoke(ctrl, arr)
-            }
+            updateItem(ctrl, current)
 
-            val song = songs[idx]
-            val trackId = buildTrackId(song)
-            val path = localFile?.absolutePath ?: streamOf(song)?.url ?: return false
-            setAudioSourceMethod?.invoke(ctrl, trackId, path, 0L, true)
-
+            val trackId = buildTrackId(currentSong)
+            setAudioSourceMethod?.invoke(ctrl, trackId, currentPath, 0L, true)
             prepareMethod?.invoke(ctrl)
             playMethod?.invoke(ctrl)
 
-            Diag.info(TAG, "已建立播放队列：${items.size} 首，从第 ${idx + 1} 首「${song.title}」开始")
+            Diag.info(TAG, "已建立播放队列：${items.size} 首，从第 ${idx + 1} 首「${currentSong.title}」开始")
+
+            // 后台补齐整个队列的 path（命中缓存时几乎零开销）
+            fillQueuePathsAsync(ctrl, songs, idx, resolveStream)
             true
         } catch (t: Throwable) {
             val cause = (t as? InvocationTargetException)?.targetException ?: t
             Diag.warn(TAG, "建立播放队列失败：${cause.javaClass.simpleName}: ${cause.message}")
             false
+        }
+    }
+
+    /**
+     * 后台补齐队列里每一首的 path。
+     *
+     * 串行执行，避免同时下载多首把带宽和磁盘打满。
+     * 每补好一首就 `updateMediaItems` 更新队列项，宿主马上就能加载
+     * 它的封面与歌词。
+     */
+    private fun fillQueuePathsAsync(
+        ctrl: Any,
+        songs: List<Song>,
+        skipIndex: Int,
+        resolveStream: (Song) -> StreamInfo?,
+    ) {
+        Thread({
+            for ((i, s) in songs.withIndex()) {
+                if (i == skipIndex) continue
+                try {
+                    // 已有可用缓存就不重复下载
+                    val existing = cachedLocalPath(s)
+                    if (existing != null) {
+                        // 只更新队列项，让宿主能读到封面/歌词
+                        newMediaItem(s, buildTrackId(s), existing)?.let { updateItem(ctrl, it) }
+                        continue
+                    }
+                    val stream = resolveStream(s) ?: continue
+                    // 先取歌词，再让 AudioCache 一并补齐（音频 + 封面 + 逐字歌词）
+                    val lrc = runCatching { KugouApi.lyricByHash(s.hash) }.getOrNull()
+                    val local = AudioCache.ensureLocal(s, stream, lrc)
+                    val path = local?.absolutePath ?: stream.url
+                    newMediaItem(s, buildTrackId(s), path)?.let { updateItem(ctrl, it) }
+                    Diag.info(TAG, "队列补齐 ${i + 1}/${songs.size}「${s.title}」")
+                } catch (t: Throwable) {
+                    Diag.warn(TAG, "队列补齐失败「${s.title}」：${t.javaClass.simpleName}")
+                }
+            }
+            Diag.info(TAG, "队列 path 补齐完成（${songs.size} 首）")
+        }, "kugou-lite-queue-fill").apply {
+            isDaemon = true
+            priority = Thread.MIN_PRIORITY
+            start()
+        }
+    }
+
+    /** 已缓存音频的本地路径；没有返回 null。 */
+    private fun cachedLocalPath(song: Song): String? {
+        val f = AudioCache.localFileOrNull(song) ?: return null
+        return f.absolutePath
+    }
+
+    /** 更新队列里的某一项。 */
+    private fun updateItem(ctrl: Any, item: Any) {
+        updateMediaItemsMethod?.let { m ->
+            val paramType = m.parameterTypes[0]
+            val arr = java.lang.reflect.Array.newInstance(paramType.componentType, 1)
+            java.lang.reflect.Array.set(arr, 0, item)
+            m.invoke(ctrl, arr)
         }
     }
 
@@ -276,29 +342,28 @@ object PlaybackBridge {
      *
      * 只调用 `setPlaybackAudioSource` 是不够的：队列里那一项的 `path`
      * 仍是空占位，宿主在某些时机（如重新加载、拖进度、切回来）会
-     * 按队列项的 path 去找音频，找不到就报「未载入歌曲」。
+     * 按队列项的 path 去找音频，找不到就报「未载入歌曲」，
+     * 同时也读不到封面与歌词。
      *
-     * 所以这里做两件事：
-     * 1. `updateMediaItems(item)` —— 把队列项的 path 换成真实的本地文件
+     * 所以这里做三件事：
+     * 1. `updateMediaItems(item)` —— 把队列项的 path 换成真实本地文件
      * 2. `setPlaybackAudioSource(trackId, path, 0, true)` —— 让宿主立即切到该源
-     *
-     * 然后 `prepare()` + `play()` 让它真正出声。
+     * 3. `prepare()` + `play()` 让它真正出声
      */
     fun rebindCurrent(song: Song, stream: StreamInfo, localFile: File?): Boolean {
         val ctrl = controller ?: ensureController() ?: return false
         val trackId = buildTrackId(song)
-        val path = localFile?.absolutePath ?: stream.url
+        // 有本地文件就用它；否则必须要有可用的流地址
+        val path = localFile?.absolutePath
+            ?: stream.url.takeIf { it.isNotBlank() }
+            ?: run {
+                Diag.warn(TAG, "重新绑定失败：既无本地文件也无流地址「${song.title}」")
+                return false
+            }
         return try {
             // 1) 先更新队列项，让 path 不再是空占位
             val item = newMediaItem(song, trackId, path)
-            if (item != null) {
-                updateMediaItemsMethod?.let { m ->
-                    val paramType = m.parameterTypes[0]
-                    val arr = java.lang.reflect.Array.newInstance(paramType.componentType, 1)
-                    java.lang.reflect.Array.set(arr, 0, item)
-                    m.invoke(ctrl, arr)
-                }
-            }
+            if (item != null) updateItem(ctrl, item)
 
             // 2) 切换音频源
             setAudioSourceMethod?.invoke(ctrl, trackId, path, 0L, true)

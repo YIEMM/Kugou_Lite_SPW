@@ -157,19 +157,12 @@ private fun onSongPicked(queue: List<Song>, index: Int) {
             Diag.warn("[page] 取流失败：${KugouApi.lastError ?: "未知原因"}")
             return@run
         }
-        // 先落盘再用本地路径播放；下载失败时退回 HTTP 直链。
-        val local = AudioCache.ensureLocal(song, stream)
+        // 先取歌词，再让 AudioCache 一并补齐（音频 + 封面 + 逐字歌词）
+        val lrc = runCatching { KugouApi.lyricByHash(song.hash) }.getOrNull()
+        val local = AudioCache.ensureLocal(song, stream, lrc)
         if (local == null) {
             Diag.warn("[page] 本地缓存失败，回退 HTTP 直链")
         }
-        // 顺带把歌词写进音频文件的内嵌元数据
-        runCatching {
-            val lrc = KugouApi.lyricByHash(song.hash)
-            if (!lrc.isNullOrBlank() && local != null) {
-                Id3CoverWriter.writeLyrics(local, lrc)
-                AudioCache.writeLrcSidecar(local, lrc)
-            }
-        }.onFailure { Diag.warn("[page] 写入内嵌歌词失败：${it.message}") }
 
         val ok = PlaybackBridge.playQueue(queue, index, { s -> KugouApi.streamUrl(s) }, local)
         if (!ok) {

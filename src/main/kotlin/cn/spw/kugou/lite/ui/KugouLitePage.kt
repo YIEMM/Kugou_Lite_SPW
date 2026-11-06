@@ -59,15 +59,10 @@ fun KugouLitePage() {
                     if (stream == null) {
                         Diag.warn("[page] 取流失败：${KugouApi.lastError ?: "未知原因"}")
                     } else {
-                        val local = AudioCache.ensureLocal(song, stream)
+                        // 先取歌词，再让 AudioCache 一并补齐（音频 + 封面 + 逐字歌词）
+                        val lrc = runCatching { KugouApi.lyricByHash(song.hash) }.getOrNull()
+                        val local = AudioCache.ensureLocal(song, stream, lrc)
                         if (local == null) Diag.warn("[page] 本地缓存失败，回退 HTTP 直链")
-                        runCatching {
-                            val lrc = KugouApi.lyricByHash(song.hash)
-                            if (!lrc.isNullOrBlank() && local != null) {
-                                Id3CoverWriter.writeLyrics(local, lrc)
-                                AudioCache.writeLrcSidecar(local, lrc)
-                            }
-                        }
                         val ok = PlaybackBridge.playQueue(queue, index, { s -> KugouApi.streamUrl(s) }, local)
                         if (!ok) {
                             Diag.warn("[page] 建立队列失败，回退单曲播放")

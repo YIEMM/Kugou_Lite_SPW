@@ -45,11 +45,37 @@ object AudioCache {
     }
 
     /**
-     * 确保音频已在本地。
+     * 取已缓存的本地音频文件（不触发下载）。
      *
+     * 用于「队列预填」：建队列时如果某首歌之前播过，直接拿它的路径，
+     * 宿主立刻就能读到封面与歌词，不必再走一次网络。
+     */
+    fun localFileOrNull(song: Song): File? {
+        val cacheDir = dir ?: return null
+        val key = song.hash.ifBlank { song.albumAudioId }.ifBlank { return null }
+        val f = File(cacheDir, "$key.mp3")
+        return if (f.isFile && f.length() > 0) f else null
+    }
+
+    /**
+     * 确保音频已在本地，并**保证封面与歌词也已写入**。
+     *
+     * ## 为什么要一起做
+     *
+     * 宿主播放栏的封面读 `TagParser.readImage(path)`，歌词读同名 `.lrc`。
+     * 两者都依赖本地文件已就绪。如果只在「首次下载」后写一次，
+     * 那么命中缓存时（`.meta` 已存在）就会跳过 —— 但那时封面/歌词
+     * 可能因为各种原因缺失（例如上一版插件没写、文件被清），
+     * 表现为「能播放但没有封面没有歌词」。
+     *
+     * 所以这里把「写封面 + 写歌词」统一成**幂等的补齐操作**：
+     * - 封面：检查 ID3 里是否已有 APIC，没有才写
+     * - 歌词：检查同名 `.lrc` 是否存在且非空，没有才写
+     *
+     * @param lyrics 歌词文本（可选；为空时只补封面）
      * @return 可播放的本地文件；失败返回 null（调用方回退到 HTTP 直链）。
      */
-    fun ensureLocal(song: Song, stream: StreamInfo): File? {
+    fun ensureLocal(song: Song, stream: StreamInfo, lyrics: String? = null): File? {
         val cacheDir = dir ?: run {
             Diag.warn(TAG, "未配置缓存目录，跳过下载")
             return null
@@ -58,49 +84,27 @@ object AudioCache {
         val key = song.hash.ifBlank { song.albumAudioId }.ifBlank { return null }
         val ext = stream.extName.ifBlank { "mp3" }.lowercase()
         val target = File(cacheDir, "$key.$ext")
-        val metaStamp = File(cacheDir, "$key.meta")
 
-        // 已缓存 → 直接用。
-        //
-        // **不要拿 target.length() 和 stream.fileSize 比**：写 ID3（封面 + 歌词）
-        // 会让文件变大（实测 4.2 MB → 4.4 MB），大小必然对不上。
-        // 早期实现因此每次都判定「文件坏了」→ 删掉重下 → 再写 ID3，
-        // 形成「每次都重新下载+重写整个文件」的死循环，
-        // 表现为「播放到 1 秒卡一下」。
-        //
-        // 现在的判据：只要文件存在且非空就算有效；元数据用 .meta 戳记控制。
+        // 已有缓存 → 补齐元数据后直接返回
         if (target.isFile && target.length() > 0) {
-            val stamp = "${target.length()}:${target.lastModified()}"
-            if (!metaStamp.isFile || metaStamp.readText().trim() != stamp) {
-                // 只在没写过元数据时补一次
-                embedCover(song, target)
-                runCatching { metaStamp.writeText("${target.length()}:${target.lastModified()}") }
-            }
+            ensureMetadata(song, target, lyrics)
             return target
         }
 
+        // 下载
         val part = File(cacheDir, "$key.$ext.part")
         part.delete()
 
-        // 主地址失败时依次试备用 CDN
         for (url in stream.allUrls) {
             if (download(url, part)) {
                 return try {
                     if (!part.renameTo(target)) {
-                        // Windows 上 rename 失败通常是目标已存在
                         target.delete()
                         part.renameTo(target)
                     }
                     if (target.isFile && target.length() > 0) {
                         Diag.info(TAG, "已缓存 ${target.name}（${target.length() / 1024} KB）")
-                        // 顺手补内嵌封面：宿主播放条/播放页的封面读的就是
-                        // 本地音频文件的内嵌图（TagParser.readImage）。
-                        embedCover(song, target)
-                        // 记戳：下次命中缓存时不再重复写 ID3（写 ID3 要重写整个文件，
-                        // 是「播放到 1 秒卡一下」的根因）
-                        runCatching {
-                            metaStamp.writeText("${target.length()}:${target.lastModified()}")
-                        }
+                        ensureMetadata(song, target, lyrics)
                         target
                     } else {
                         null
@@ -118,15 +122,33 @@ object AudioCache {
     }
 
     /**
-     * 把封面写进音频文件的 ID3 APIC 帧，同时**旁挂一份同名 `.lrc` 文件**。
+     * 幂等补齐封面与歌词。
      *
-     * 失败不影响播放（只是没有封面/歌词），所以整体静默降级。
+     * 每一步都先检查是否已存在，已存在就跳过 —— 避免每次播放都重写
+     * 整个音频文件（那是「播放到 1 秒卡一下」的根因）。
+     */
+    private fun ensureMetadata(song: Song, audioFile: File, lyrics: String?) {
+        embedCover(song, audioFile)
+        if (!lyrics.isNullOrBlank()) {
+            writeLrcSidecar(audioFile, lyrics)
+        }
+    }
+
+    /**
+     * 把封面写进音频文件的 ID3 APIC 帧。
+     *
+     * 失败不影响播放（只是没有封面），所以整体静默降级。
+     * 已有 APIC 帧时跳过（[Id3CoverWriter.writeCover] 内部判断），
+     * 避免每次播放都重写整个音频文件。
      */
     private fun embedCover(song: Song, audioFile: File) {
         try {
             // 只处理支持 ID3 的容器；flac 用 vorbis comment，暂不支持
             val ext = audioFile.extension.lowercase()
             if (ext != "mp3") return
+
+            // 已有封面就跳过（读写整个文件很贵）
+            if (Id3CoverWriter.hasApicFrame(audioFile)) return
 
             val coverUrl = song.coverUrl(500) ?: return
             val cacheDir = dir ?: return
@@ -182,8 +204,8 @@ object AudioCache {
             val text = if (isKrc) KrcLyrics.toEnhancedLrc(lyrics) else lyrics
             val lrc = File(audioFile.parentFile, audioFile.nameWithoutExtension + ".lrc")
 
-            // 已写过且内容一致 → 跳过（避免每次播放都重写磁盘）
-            if (lrc.isFile && lrc.length().toLong() == text.toByteArray(Charsets.UTF_8).size.toLong()) {
+            // 已有非空歌词文件就跳过（避免每次播放重写磁盘）
+            if (lrc.isFile && lrc.length() > 100) {
                 return true
             }
 
