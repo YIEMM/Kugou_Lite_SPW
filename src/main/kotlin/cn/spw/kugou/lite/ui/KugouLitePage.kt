@@ -99,6 +99,17 @@ fun KugouLitePage() {
         KugouLiteTab.Login -> SubPage(title = "登录", onBack = { PageNav.backHome() }) {
             LoginPage()
         }
+
+        KugouLiteTab.Settings -> SubPage(title = "设置", onBack = { PageNav.backHome() }) {
+            SettingsPage()
+        }
+
+        KugouLiteTab.Artist -> SubPage(
+            title = PageNav.detailTitle.ifBlank { "歌手" },
+            onBack = { PageNav.backHome() },
+        ) {
+            ArtistPage()
+        }
     }
 }
 
@@ -173,6 +184,12 @@ private fun HomePage() {
                     subtitle = if (AuthStore.isLoggedIn) "点击可重新扫码登录" else "点击扫码登录（取流与歌单需要）",
                     modifier = Modifier.fillMaxWidth(),
                     onClick = { PageNav.go(KugouLiteTab.Login) },
+                )
+                SaltItem(
+                    title = "设置",
+                    subtitle = "音质、缓存、退出登录",
+                    modifier = Modifier.fillMaxWidth(),
+                    onClick = { PageNav.go(KugouLiteTab.Settings) },
                 )
                 Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp)) {
                     Text3(

@@ -45,6 +45,13 @@ data class Song(
      * 不需要 hash。
      */
     val albumAudioId: String = "",
+    /**
+     * 歌手 ID 列表（酷狗内部的 author_id）。
+     *
+     * 搜索接口的 `Singers[].id` 里就有。点击歌手名可以用它进歌手页。
+     * 榜单/歌单接口不一定提供，所以可能为空。
+     */
+    val artistIds: List<String> = emptyList(),
 ) {
     /**
      * 时长格式化为 `m:ss`。
@@ -147,4 +154,16 @@ data class Rank(
     val name: String,
     val coverUrl: String?,
     val songCount: Int,
+)
+
+/**
+ * 歌手。
+ *
+ * `id` 来自搜索结果里的 `Singers[].id`（酷狗内部的 author_id）。
+ */
+data class Artist(
+    val id: String,
+    val name: String,
+    /** 头像（`union_cover` 或其他头像字段）。 */
+    val avatarUrl: String? = null,
 )

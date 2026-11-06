@@ -129,24 +129,16 @@ fun SongListPage() {
 }
 
 /**
- * 点歌的统一入口（列表内点击）。
+ * 通用的「从列表点歌」流程，供所有页面共用。
  *
- * 流程（全部在后台线程）：
  * ```
- * 取流 → 下载到本地缓存 → 建立整条播放队列并从该首开始播
+ * 取流 → 下载到本地缓存（含封面/歌词）→ 建立整条播放队列 → 播放
  * ```
  *
- * **为什么要先下载**：宿主对「曲库外的 HTTP 曲目」经常根本不打开
- * （见 [cn.spw.kugou.lite.host.PlaybackBridge] 的类文档），
- * 只有本地文件路径能保证真的出声。
- *
- * **为什么要传整个列表**：单曲入队会让「下一首」失效（队列只有一首）。
- * 这里把整个列表建进队列，宿主的切歌按钮才能真正工作。
- *
- * @param queue 当前列表的全部歌曲（用于建队列）
- * @param index 被点击的曲目在列表中的下标
+ * 集中在一处的好处：以后改进播放链路（比如预取下一首、音质重试）
+ * 只需要改这里，不用同步改四个页面。
  */
-private fun onSongPicked(queue: List<Song>, index: Int) {
+internal fun playSongsFromQueue(queue: List<Song>, index: Int) {
     val song = queue.getOrNull(index) ?: return
     Diag.info("[page] 点歌「${song.title}」- ${song.singer}（${index + 1}/${queue.size}）")
     ApiExec.run({ result ->
@@ -166,15 +158,22 @@ private fun onSongPicked(queue: List<Song>, index: Int) {
 
         val ok = PlaybackBridge.playQueue(queue, index, { s -> KugouApi.streamUrl(s) }, local)
         if (!ok) {
-            // 队列建立失败时退回单曲播放，至少能出声
             Diag.warn("[page] 建立队列失败，回退单曲播放")
             PlaybackBridge.play(song, stream, local)
         }
-        // 登记队列并启动切歌监听：宿主切到下一首时自动补音频源
+        // 登记队列并启动切歌监听
         TrackWatcher.updateQueue(queue, index)
         TrackWatcher.start()
     }
 }
+
+/**
+ * 点歌的统一入口（列表内点击）。
+ *
+ * @param queue 当前列表的全部歌曲（用于建队列）
+ * @param index 被点击的曲目在列表中的下标
+ */
+private fun onSongPicked(queue: List<Song>, index: Int) = playSongsFromQueue(queue, index)
 
 /**
  * 一行歌曲：封面 + 歌名 + 歌手·时长。
@@ -182,6 +181,11 @@ private fun onSongPicked(queue: List<Song>, index: Int) {
  * 封面来自酷狗 CDN（`trans_param.union_cover` 的 `{size}` 已替换成 120px），
  * 由 [CoverLoader] 异步加载 + 两级缓存。加载中/失败时显示音符占位块，
  * 保证行高稳定，不会因为图片加载而跳动。
+ *
+ * ## 歌手名可点
+ *
+ * 有 `artistIds` 时，歌手名单独可点并进入歌手页；其余区域点击是「播放」。
+ * 用两个独立 `clickable` 实现（内层会消费事件，不会冒泡到外层）。
  */
 @Composable
 internal fun SongRow(song: Song, onClick: () -> Unit) {
@@ -195,18 +199,28 @@ internal fun SongRow(song: Song, onClick: () -> Unit) {
         SongCover(song.coverUrl(120))
         Column(Modifier.padding(start = 12.dp)) {
             Text3(text = song.title, color = Color(0xFFEDEDED))
-            val sub = buildString {
-                append(song.singer)
+
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                val firstArtistId = song.artistIds.firstOrNull()
+                if (firstArtistId != null) {
+                    Text3(
+                        text = song.singer,
+                        color = Color(0xFF6FA8DC),
+                        modifier = Modifier.clickable {
+                            PageNav.openArtist(firstArtistId, song.singer)
+                        },
+                    )
+                } else {
+                    Text3(text = song.singer, color = Color(0xFF9A9A9A))
+                }
                 if (song.durationSec > 0) {
-                    append(" · ")
-                    append(song.durationText)
+                    Text3(
+                        text = " · ${song.durationText}",
+                        color = Color(0xFF9A9A9A),
+                        modifier = Modifier.padding(top = 2.dp),
+                    )
                 }
             }
-            Text3(
-                text = sub,
-                color = Color(0xFF9A9A9A),
-                modifier = Modifier.padding(top = 2.dp),
-            )
         }
     }
 }

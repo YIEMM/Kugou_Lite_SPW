@@ -78,54 +78,69 @@ object KugouApi {
     // ---------------------------------------------------------------- 取流
 
     /**
-     * 取播放地址。
+     * 取播放地址（按设置里的音质偏好，自动降级）。
      *
-     * @param song 要播放的歌曲。[Song.streamQuery] 会自动选择 hash 还是
-     *             album_audio_id 作为查询参数 —— 榜单歌曲没有 hash，只能走后者。
-     * @return 成功返回 [StreamInfo]；付费/无权限/未登录返回 null，
-     *         具体原因看 [lastNeedsLogin] 与 [lastError]。
+     * ## 两轮 + 音质降级链
+     *
+     * 对每个音质档位（从高到低）：
+     * 1. 常规取流
+     * 2. 失败则用 `ppage_id=356753938`（收藏页）解锁已收藏的无版权曲目
+     *
+     * 任一档位拿到地址就返回。全部失败才返回 null。
+     *
+     * 非会员请求 flac/320 时服务端常返回 128k 或直接失败，
+     * 降级链保证「至少能出声」，而不是直接报错。
+     *
+     * @param song 要播放的歌曲
+     * @return 成功返回 [StreamInfo]；付费/无权限/未登录返回 null
      */
-    fun streamUrl(song: Song, quality: String = "128"): StreamInfo? {
+    fun streamUrl(song: Song): StreamInfo? {
         val query = song.streamQuery
         if (query.isEmpty()) {
             lastError = "该歌曲缺少取流标识"
             return null
         }
 
-        // 第一轮：常规取流
-        streamUrlByQuery(query, quality, pageId = null)?.let { return it }
+        val chain = Settings.resolveQualityChain()
+        for (quality in chain) {
+            // 第一轮：常规取流
+            streamUrlByQuery(query, quality, pageId = null)?.let {
+                Diag.info(TAG, "取流成功「${song.title}」请求=${quality} 实际=${it.qualityText}")
+                return it
+            }
 
-        // 第二轮：**已收藏无版权歌曲的解锁兜底**
-        //
-        // 酷狗服务端对部分曲目返回
-        //   status=3, privilege=5, _msg="Deny: the current behavior ... forbidden"
-        // 这是版权/地区限制，常规请求永远拿不到地址（实测《重音テト - 臙脂》
-        // 所有音质档位、所有常规接口全部 status=3）。
-        //
-        // 但酷狗有一条约定：**歌曲被收藏后，即便无版权也可通过收藏页的
-        // page_id 解锁播放**。参考 md3Music 的实现：
-        //
-        // > 已收藏无版权歌曲兜底：用 ppage_id=356753938（收藏页）尝试获取
-        // > 完整播放链接。酷狗约定：歌曲被收藏后，即便无版权也可通过该
-        // > page_id 解锁播放。
-        // > 参考 EchoMusic 的 resolver.ts 中 getSongUrl(track.hash, '', 356753938)
-        //
-        // 实测有效：同一首歌带 `ppage_id=356753938` 后立即返回 128k 直链。
-        Diag.info(TAG, "常规取流失败，尝试收藏页解锁（ppage_id=$COLLECT_PAGE_ID）")
-        streamUrlByQuery(query, quality, pageId = COLLECT_PAGE_ID)?.let {
-            Diag.info(TAG, "收藏页解锁成功：「${song.title}」")
-            return it
+            // 第二轮：收藏页解锁（针对受限曲目）
+            streamUrlByQuery(query, quality, pageId = COLLECT_PAGE_ID)?.let {
+                Diag.info(TAG, "收藏页解锁成功「${song.title}」请求=${quality} 实际=${it.qualityText}")
+                return it
+            }
+
+            if (lastNeedsLogin) return null // 登录问题，降级也没用
         }
 
-        // 两轮都失败，把最后一轮的 lastError 留给 UI
         return null
     }
 
     /**
-     * 按 hash 取流（保留给只有 hash 的调用方）。
+     * 按指定音质取流（保留给需要精确控制的调用方）。
+     *
+     * @param quality 形如 `128` / `320` / `flac`
      */
-    fun streamUrl(hash: String, quality: String = "128"): StreamInfo? =
-        streamUrlByQuery("hash=$hash", quality, pageId = null)
+    fun streamUrl(song: Song, quality: String): StreamInfo? {
+        val query = song.streamQuery
+        if (query.isEmpty()) {
+            lastError = "该歌曲缺少取流标识"
+            return null
+        }
+        streamUrlByQuery(query, quality, pageId = null)?.let { return it }
+        return streamUrlByQuery(query, quality, pageId = COLLECT_PAGE_ID)
+    }
+
+    /** 按 hash 取流（保留给只有 hash 的调用方）。 */
+    fun streamUrl(hash: String, quality: String = "128"): StreamInfo? {
+        streamUrlByQuery("hash=$hash", quality, pageId = null)?.let { return it }
+        return streamUrlByQuery("hash=$hash", quality, pageId = COLLECT_PAGE_ID)
+    }
 
     private fun streamUrlByQuery(streamQuery: String, quality: String, pageId: String?): StreamInfo? {
         val params = parseQueryString(streamQuery).toMutableMap()
@@ -237,6 +252,42 @@ object KugouApi {
         lyric(best, fmt = "krc")?.takeIf { it.isNotBlank() }?.let { return it }
         // 退回 LRC（逐行）
         return lyric(best, fmt = "lrc")
+    }
+
+    // ---------------------------------------------------------------- 歌手
+
+    /**
+     * 歌手的单曲列表。
+     *
+     * ## 返回结构（实测 `/artist/audios`）
+     *
+     * `data` 是**数组**（不是常见的 `data.songs`），每项字段与榜单歌曲类似：
+     * `hash` / `audio_id` / `album_id` / `trans_param.union_cover` 等。
+     *
+     * @param artistId 酷狗内部 author_id（搜索结果 `Singers[].id`）
+     * @param sort `hot` = 按热度，其它值按时间
+     */
+    fun artistSongs(artistId: String, page: Int = 1, pageSize: Int = 30, sort: String = "hot"): List<Song> {
+        if (artistId.isBlank()) return emptyList()
+        val json = get(
+            "/artist/audios",
+            mapOf(
+                "id" to artistId,
+                "page" to page.toString(),
+                "pagesize" to pageSize.toString(),
+                "sort" to sort,
+            ),
+        ) ?: return emptyList()
+
+        // data 可能是数组，也可能包在 songs/info 里
+        val list = JsonLite.asArray(JsonLite.dig(json, "data"))
+            ?: JsonLite.asArray(JsonLite.dig(json, "data", "songs"))
+            ?: JsonLite.asArray(JsonLite.dig(json, "data", "info"))
+            ?: return emptyList()
+
+        val songs = list.mapNotNull { parseSong(it) }
+        Diag.info(TAG, "歌手 $artistId → ${songs.size} 首")
+        return songs
     }
 
     // ---------------------------------------------------------------- 歌单 / 榜单 / 推荐
@@ -475,19 +526,23 @@ object KugouApi {
         // 两个取流键都没有 => 这首歌点不了，不要放进列表。
         if (hash.isBlank() && albumAudioId.isBlank()) return null
 
-        val rawName = firstString(obj, "FileName", "filename", "ori_audio_name", "OriSongName", "name")
-            ?: "未知曲目"
+        val rawName = firstString(
+            obj, "FileName", "filename", "ori_audio_name", "OriSongName", "name", "audio_name",
+        ) ?: "未知曲目"
 
         // 歌名字段因接口而异：
         //   /search             OriSongName（纯歌名）
         //   /everyday/recommend songname（纯歌名）
         //   /playlist/track/all **name**，格式是「歌手 - 歌名」
+        //   /artist/audios      **audio_name**（纯歌名）+ author_name（歌手）
         //
         // 所以对 name 这种复合格式，要拆出歌名部分；同时下面 singer 也会
         // 从 name 里拆 —— 歌单接口**没有单独的歌手字段**。
         val composite = firstString(obj, "name")?.takeIf { it.contains(" - ") }
 
-        val title = firstString(obj, "OriSongName", "songname", "SongName", "official_songname")
+        val title = firstString(
+            obj, "OriSongName", "songname", "SongName", "official_songname", "audio_name",
+        )
             ?: composite?.substringAfter(" - ")?.trim()?.takeIf { it.isNotBlank() }
             ?: rawName
 
@@ -513,6 +568,23 @@ object KugouApi {
 
         val size = firstLong(obj, "FileSize", "filesize", "file_size", "size")
 
+        // 歌手 ID：搜索接口在 Singers[].id，也可能是 SingerId 数组或单值
+        val artistIds = buildList {
+            JsonLite.asArray(obj["Singers"]).orEmpty().forEach { item ->
+                JsonLite.asString(JsonLite.asObject(item)?.get("id"))
+                    ?.takeIf { it.isNotBlank() }
+                    ?.let { add(it) }
+            }
+            if (isEmpty()) {
+                JsonLite.asArray(obj["SingerId"]).orEmpty().forEach { item ->
+                    JsonLite.asString(item)?.takeIf { it.isNotBlank() }?.let { add(it) }
+                }
+            }
+            if (isEmpty()) {
+                firstString(obj, "SingerId", "author_id")?.let { add(it) }
+            }
+        }
+
         return Song(
             fileName = fileName,
             title = title,
@@ -525,6 +597,7 @@ object KugouApi {
             payType = firstInt(obj, "PayType", "pay_type"),
             albumName = firstString(obj, "AlbumName", "album_name", "remark"),
             albumAudioId = albumAudioId,
+            artistIds = artistIds,
         )
     }
 
