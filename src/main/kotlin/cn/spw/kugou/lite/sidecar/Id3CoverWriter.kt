@@ -128,23 +128,14 @@ object Id3CoverWriter {
         return Header(major, size, flags)
     }
 
-    private fun hasApic(raf: RandomAccessFile, header: Header): Boolean {
-        raf.seek(10)
-        val buf = ByteArray(header.tagSize.coerceAtMost(Int.MAX_VALUE))
-        val read = raf.read(buf)
-        if (read <= 0) return false
-        // 粗暴但可靠：在标签区里找 APIC 帧标识
-        for (i in 0..(read - 4)) {
-            if (buf[i] == 'A'.code.toByte() &&
-                buf[i + 1] == 'P'.code.toByte() &&
-                buf[i + 2] == 'I'.code.toByte() &&
-                buf[i + 3] == 'C'.code.toByte()
-            ) {
-                return true
-            }
-        }
-        return false
-    }
+    /**
+     * 标签区里是否已有 APIC 帧。
+     *
+     * 与 [hasFrame] 同样按帧遍历，避免把「填充后不可读的 APIC」
+     * 误判成「已有封面」而跳过重写。
+     */
+    private fun hasApic(raf: RandomAccessFile, header: Header): Boolean =
+        hasFrame(raf, header, "APIC")
 
     /** 文件没有 ID3 标签时，新建一个只含 APIC 的标签。 */
     private fun writeFresh(raf: RandomAccessFile, cover: ByteArray, mime: String): Boolean {
@@ -173,39 +164,111 @@ object Id3CoverWriter {
         return true
     }
 
-    /** 在已有标签末尾追加 APIC 帧，并更新标签大小。 */
+    /**
+     * 在已有标签末尾追加 APIC 帧，并更新标签大小。
+     *
+     * ## 必须用「重建」而不是「拼接」
+     *
+     * 真机踩坑（关键）：酷狗返回的部分 mp3 自带**损坏的 ID3 标签** ——
+     * 实测某首歌的 TALB 帧声明 size=59，但实际内容占 60 字节，
+     * 于是所有后续帧的解析整体偏移 1 字节：
+     *
+     * ```
+     * 期望: ...ver.>APIC<size>...
+     * 实际: ...ver.>A|PIC<size>...   ← APIC 的首字母 A 被上一帧吞掉
+     * ```
+     *
+     * 在这类坏标签后直接拼接新帧，结果一定是错位的：写进去的 APIC
+     * 会被解析成 `PIC`，size 也读成天文数字（实测 22 MB）。
+     *
+     * 所以这里**不信任原标签的帧结构**，改为：
+     * 1. 把原标签里的帧**逐个重新解析并规范化**（能解析的保留，解析不了的丢弃）
+     * 2. 用规范的帧重新拼一个干净的标签
+     * 3. 追加新帧
+     *
+     * 这样无论原标签是否损坏，输出都是合法的。
+     */
     private fun appendApic(raf: RandomAccessFile, header: Header, cover: ByteArray, mime: String) {
         val apic = buildApicFrame(cover, mime)
-        val newSize = header.tagSize + apic.size
+        val oldFrames = readFrames(raf, header)
+        rewriteWithFrames(raf, header, oldFrames + apic)
+        Diag.info(
+            TAG,
+            "已写入封面帧（${cover.size} 字节，保留原帧 ${oldFrames.size} 个）",
+        )
+    }
 
-        // 读原标签内容 + 之后的音频数据
+    /**
+     * 逐个解析标签里的帧。
+     *
+     * 遇到以下情况立即停止（与宿主解析器行为一致）：
+     * - 填充字节（全 0）
+     * - 越界
+     * - 帧名不是 ASCII 字母/数字
+     *
+     * 返回的是**帧的完整字节**（10 字节头 + body）。
+     */
+    private fun readFrames(raf: RandomAccessFile, header: Header): List<ByteArray> {
         raf.seek(10)
-        val oldTag = ByteArray(header.tagSize)
-        raf.readFully(oldTag)
+        val tag = ByteArray(header.tagSize.coerceAtMost(Int.MAX_VALUE))
+        val read = raf.read(tag)
+        if (read < 10) return emptyList()
+
+        val out = ArrayList<ByteArray>()
+        var pos = 0
+        while (pos + 10 <= read) {
+            // 填充字节表示帧区结束
+            if (tag[pos] == 0.toByte()) break
+
+            // 帧名必须全是可打印 ASCII
+            var validName = true
+            for (i in 0 until 4) {
+                val c = tag[pos + i].toInt() and 0xFF
+                if (c < 0x20 || c > 0x7E) { validName = false; break }
+            }
+            if (!validName) break
+
+            val size = ((tag[pos + 4].toInt() and 0xFF) shl 24) or
+                ((tag[pos + 5].toInt() and 0xFF) shl 16) or
+                ((tag[pos + 6].toInt() and 0xFF) shl 8) or
+                (tag[pos + 7].toInt() and 0xFF)
+            if (size < 0 || pos + 10 + size > read) break
+
+            out.add(tag.copyOfRange(pos, pos + 10 + size))
+            pos += 10 + size
+        }
+        return out
+    }
+
+    /**
+     * 用给定的帧列表重写整个文件（新标签 + 原音频）。
+     *
+     * 帧列表里的每一项都是「10 字节头 + body」的完整帧。
+     */
+    private fun rewriteWithFrames(raf: RandomAccessFile, header: Header, frames: List<ByteArray>) {
+        val tagSize = frames.sumOf { it.size }
         val audioStart = 10L + header.tagSize
-        val audio = ByteArray((raf.length() - audioStart).toInt().coerceAtLeast(0))
-        if (audio.isNotEmpty()) {
+        val audioLen = (raf.length() - audioStart).coerceAtLeast(0).toInt()
+        val audio = ByteArray(audioLen)
+        if (audioLen > 0) {
             raf.seek(audioStart)
             raf.readFully(audio)
         }
 
-        // 重写：新头 + 旧标签 + APIC + 音频
         val newHeader = ByteArray(10)
         newHeader[0] = 'I'.code.toByte(); newHeader[1] = 'D'.code.toByte(); newHeader[2] = '3'.code.toByte()
         newHeader[3] = 3; newHeader[4] = 0
-        newHeader[5] = header.flags.toByte()
-        newHeader[6] = ((newSize shr 21) and 0x7F).toByte()
-        newHeader[7] = ((newSize shr 14) and 0x7F).toByte()
-        newHeader[8] = ((newSize shr 7) and 0x7F).toByte()
-        newHeader[9] = (newSize and 0x7F).toByte()
+        newHeader[5] = 0 // flags 清零：原标签的 flags 可能引用了已丢弃的扩展头
+        newHeader[6] = ((tagSize shr 21) and 0x7F).toByte()
+        newHeader[7] = ((tagSize shr 14) and 0x7F).toByte()
+        newHeader[8] = ((tagSize shr 7) and 0x7F).toByte()
+        newHeader[9] = (tagSize and 0x7F).toByte()
 
         raf.seek(0)
         raf.setLength(0)
         raf.write(newHeader)
-        raf.write(oldTag)
-        raf.write(apic)
+        for (f in frames) raf.write(f)
         if (audio.isNotEmpty()) raf.write(audio)
-        Diag.info(TAG, "已追加封面帧（${cover.size} 字节，标签 $newSize 字节）")
     }
 
     /**
@@ -291,19 +354,45 @@ object Id3CoverWriter {
         }
     }
 
-    /** 标签区里是否已有指定帧。 */
-    private fun hasFrame(raf: RandomAccessFile, header: Header, id: String): Boolean {
+    /**
+     * 标签区里是否已有 `frameId` 帧。
+     *
+     * ## 必须逐帧遍历，不能整个标签区搜字节
+     *
+     * 早期实现直接 `buf.find(id)`，会在两种情况下误判：
+     * 1. **填充之后的帧**：旧实现把新帧写到了尾部填充后面，
+     *    宿主的 jaudiotagger 扫到填充就停，读不到 —— 但我们自己
+     *    整区搜索却「找到」了，于是误以为已存在，跳过重写。
+     * 2. 帧内容里恰好出现相同四字节。
+     *
+     * 现在按「帧头 + 大小」逐帧前进，遇到填充字节立即认为帧区结束，
+     * 与宿主解析器的行为保持一致。
+     */
+    private fun hasFrame(raf: RandomAccessFile, header: Header, frameId: String): Boolean {
+        val want = frameId.toByteArray(Charsets.ISO_8859_1)
         raf.seek(10)
-        val buf = ByteArray(header.tagSize.coerceAtMost(Int.MAX_VALUE))
-        val read = raf.read(buf)
-        if (read < 4) return false
-        val target = id.toByteArray(Charsets.ISO_8859_1)
-        for (i in 0..(read - 4)) {
+        val tag = ByteArray(header.tagSize.coerceAtMost(Int.MAX_VALUE))
+        val read = raf.read(tag)
+        if (read < 10) return false
+
+        var pos = 0
+        while (pos + 10 <= read) {
+            // 填充字节（全 0）表示帧区结束
+            if (tag[pos] == 0.toByte()) return false
+
+            val size = ((tag[pos + 4].toInt() and 0xFF) shl 24) or
+                ((tag[pos + 5].toInt() and 0xFF) shl 16) or
+                ((tag[pos + 6].toInt() and 0xFF) shl 8) or
+                (tag[pos + 7].toInt() and 0xFF)
+            if (size < 0 || pos + 10 + size > read) return false
+
             var match = true
-            for (j in 0 until 4) {
-                if (buf[i + j] != target[j]) { match = false; break }
+            for (i in 0 until 4) {
+                if (tag[pos + i] != want[i]) { match = false; break }
             }
             if (match) return true
+
+            pos += 10 + size
         }
         return false
     }
@@ -334,38 +423,14 @@ object Id3CoverWriter {
     }
 
     /**
-     * 往已有标签追加一个帧并更新标签大小。
+     * 往已有标签追加一个帧（重建方式）。
      *
-     * 与 [appendApic] 逻辑相同，抽出来供 USLT 复用。
+     * 与 [appendApic] 走同一条「解析旧帧 → 规范重建」的通路，
+     * 因此同样能修复酷狗原始标签里的 1 字节错位问题。
      */
     private fun appendFrame(raf: RandomAccessFile, header: Header, frame: ByteArray) {
-        val newSize = header.tagSize + frame.size
-
-        raf.seek(10)
-        val oldTag = ByteArray(header.tagSize)
-        raf.readFully(oldTag)
-        val audioStart = 10L + header.tagSize
-        val audio = ByteArray((raf.length() - audioStart).toInt().coerceAtLeast(0))
-        if (audio.isNotEmpty()) {
-            raf.seek(audioStart)
-            raf.readFully(audio)
-        }
-
-        val newHeader = ByteArray(10)
-        newHeader[0] = 'I'.code.toByte(); newHeader[1] = 'D'.code.toByte(); newHeader[2] = '3'.code.toByte()
-        newHeader[3] = 3; newHeader[4] = 0
-        newHeader[5] = header.flags.toByte()
-        newHeader[6] = ((newSize shr 21) and 0x7F).toByte()
-        newHeader[7] = ((newSize shr 14) and 0x7F).toByte()
-        newHeader[8] = ((newSize shr 7) and 0x7F).toByte()
-        newHeader[9] = (newSize and 0x7F).toByte()
-
-        raf.seek(0)
-        raf.setLength(0)
-        raf.write(newHeader)
-        raf.write(oldTag)
-        raf.write(frame)
-        if (audio.isNotEmpty()) raf.write(audio)
-        Diag.info(TAG, "已追加帧（${frame.size} 字节，标签 $newSize 字节）")
+        val oldFrames = readFrames(raf, header)
+        rewriteWithFrames(raf, header, oldFrames + frame)
+        Diag.info(TAG, "已写入帧（${frame.size} 字节，保留原帧 ${oldFrames.size} 个）")
     }
 }
