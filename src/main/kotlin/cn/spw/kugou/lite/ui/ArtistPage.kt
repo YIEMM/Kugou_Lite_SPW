@@ -54,6 +54,7 @@ fun ArtistPage() {
     var tab by remember { mutableStateOf(0) }
     var following by remember { mutableStateOf(false) }
     var followBusy by remember { mutableStateOf(false) }
+    var notice by remember { mutableStateOf<String?>(null) }
 
     LaunchedEffect(artistId) {
         if (artistId.isBlank()) return@LaunchedEffect
@@ -61,9 +62,11 @@ fun ArtistPage() {
         hotState.load { runCatching { KugouApi.artistSongs(artistId, sort = "hot") }.getOrDefault(emptyList()) }
         albumState.load { ExploreApi.artistAlbums(artistId) }
     }
-    // 详情到达后初始化关注状态（仅首帧参考）
+    // 详情到达后初始化关注状态：服务端 user_status 或本地记录（R3 关注态不回落）
     LaunchedEffect(detailState.value) {
-        (detailState.value as? Async.Success)?.value?.let { following = it.userStatus == 1 }
+        (detailState.value as? Async.Success)?.value?.let { d ->
+            following = FollowStore.isFollowing(artistId, d.userStatus)
+        }
     }
 
     val detail = (detailState.value as? Async.Success)?.value
@@ -78,25 +81,31 @@ fun ArtistPage() {
         }
     }
 
-    SaltScreen(title = name) {
-        BoxWithConstraints(Modifier.fillMaxWidth()) {
-            val showAlbum = maxWidth.value >= TABLE_ALBUM_MIN_WIDTH_DP
-            Column(Modifier.fillMaxWidth().padding(bottom = 16.dp)) {
+    // ⚠️ 不要在这里再套 SaltScreen —— 调用方（KugouLitePage 的 SubPage）
+    // 已经提供宿主原生页框（标题栏 + 返回键 + 滚动容器）。双层会得到双标题栏、
+    // 双返回键与嵌套滚动，且内层返回键回落 PageState::requestBack 会直接退出
+    // 整个插件页而不是弹栈（整分支审查 Critical）。
+    BoxWithConstraints(Modifier.fillMaxWidth()) {
+        val showAlbum = maxWidth.value >= TABLE_ALBUM_MIN_WIDTH_DP
+        Column(Modifier.fillMaxWidth().padding(bottom = 16.dp)) {
                 PageHero(coverUrl = detail?.avatarUrl?.replace("{size}", "240"), title = name, meta = meta) {
                     HeroChip(if (following) "已关注" else "＋ 关注") {
                         if (followBusy) return@HeroChip
+                        // 未登录：明确提示，不发请求、不改状态（避免静默回滚）
+                        if (!cn.spw.kugou.lite.sidecar.AuthStore.isLoggedIn) {
+                            notice = "关注需要先登录（设置 → 登录）"
+                            return@HeroChip
+                        }
                         followBusy = true
                         val target = !following
                         following = target // 乐观翻转
-                        if (!cn.spw.kugou.lite.sidecar.AuthStore.isLoggedIn) {
-                            following = !target
-                            followBusy = false
-                            return@HeroChip
-                        }
+                        FollowStore.setFollowing(artistId, target) // 本地记住（R3）
                         ApiExec.run(onResult = { res ->
                             val ok = res.getOrDefault(false)
                             if (!ok) {
-                                following = !target // 回滚
+                                following = !target
+                                FollowStore.setFollowing(artistId, !target)
+                                notice = "关注操作失败，请稍后重试"
                                 Diag.warn("[artist] 关注操作失败，已回滚")
                             }
                             followBusy = false
@@ -110,6 +119,14 @@ fun ArtistPage() {
                     }
                 }
 
+                notice?.let {
+                    Text3(
+                        text = it,
+                        color = KugouTheme.colors.muted,
+                        modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp),
+                    )
+                }
+
                 SlidingTabBar(
                     tabs = listOf("热门歌曲", "专辑", "信息"),
                     selected = tab,
@@ -121,10 +138,12 @@ fun ArtistPage() {
                     1 -> Albums(albumState.value)
                     else -> Info(detail)
                 }
-            }
         }
     }
 }
+
+/** 歌手页专辑网格列数（内容区宽度稳定，固定三列）。 */
+private const val ARTIST_GRID_COLUMNS = 3
 
 /** 粉丝数文本。 */
 private fun fansText(n: Long): String = when {
@@ -194,7 +213,7 @@ private fun Albums(state: Async<ExploreApi.AlbumPage>) {
             } else {
                 SaltCard(Modifier.fillMaxWidth().padding(horizontal = 16.dp)) {
                     Column(Modifier.fillMaxWidth().padding(12.dp)) {
-                        page.items.chunked(3).forEach { row ->
+                        gridRows(page.items, ARTIST_GRID_COLUMNS).forEach { row ->
                             Row(Modifier.fillMaxWidth()) {
                                 row.forEach { al: AlbumBrief ->
                                     CoverGridCard(
@@ -204,7 +223,7 @@ private fun Albums(state: Async<ExploreApi.AlbumPage>) {
                                         modifier = Modifier.weight(1f).padding(4.dp),
                                     ) { PageNav.openAlbum(al.id, al.name) }
                                 }
-                                repeat(3 - row.size) { Spacer(Modifier.weight(1f)) }
+                                repeat(ARTIST_GRID_COLUMNS - row.size) { Spacer(Modifier.weight(1f)) }
                             }
                         }
                     }

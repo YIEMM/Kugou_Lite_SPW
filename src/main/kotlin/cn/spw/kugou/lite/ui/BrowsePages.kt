@@ -12,6 +12,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -93,6 +94,8 @@ fun PlaylistPage() {
     var newName by remember { mutableStateOf("") }
     var busy by remember { mutableStateOf(false) }
     var notice by remember { mutableStateOf<String?>(null) }
+    /** 等待二次确认删除的歌单 listid（null = 无待确认）。 */
+    var pendingDeleteId by remember { mutableStateOf<String?>(null) }
 
     LaunchedEffect(reload) { state.load { KugouApi.userPlaylists() } }
 
@@ -204,8 +207,10 @@ fun PlaylistPage() {
                             StatusBlock("这里还没有歌单")
                         } else {
                             SaltCard(Modifier.fillMaxWidth().padding(horizontal = 16.dp)) {
+                                BoxWithConstraints(Modifier.fillMaxWidth()) {
+                                val cols = coverGridColumns(maxWidth.value)
                                 Column(Modifier.fillMaxWidth().padding(12.dp)) {
-                                    shown.chunked(3).forEach { row ->
+                                    gridRows(shown, cols).forEach { row ->
                                         Row(Modifier.fillMaxWidth()) {
                                             row.forEach { pl ->
                                                 Box(Modifier.weight(1f)) {
@@ -215,41 +220,83 @@ fun PlaylistPage() {
                                                         subtitle = "${pl.songCount} 首",
                                                         modifier = Modifier.padding(4.dp),
                                                     ) { PageNav.openPlaylist(pl.id, pl.name) }
-                                                    // 自建歌单：行尾「…」菜单（删除）
+                                                    // 自建歌单：行尾「…」→ 两步确认删除
+                                                    // （误触即永久删歌单，必须有确认层）
                                                     if (pl.isOwn && !system.contains(pl)) {
-                                                        Text3(
-                                                            text = "…",
-                                                            color = KugouTheme.colors.muted,
-                                                            modifier = Modifier
-                                                                .align(Alignment.TopEnd)
-                                                                .clickable {
-                                                                    busy = true
-                                                                    ApiExec.run(onResult = { res ->
-                                                                        val ok = res.getOrDefault(false)
-                                                                        busy = false
-                                                                        notice = when {
-                                                                            !ok && KugouApi.lastNeedsLogin -> "请先登录"
-                                                                            !ok -> "删除失败"
-                                                                            else -> "已删除「${pl.name}」"
-                                                                        }
-                                                                        if (ok) {
-                                                                            reload++
-                                                                            // 后台确认真的消失（读缓存延迟）
-                                                                            ApiExec.run(onResult = { g ->
-                                                                                if (!g.getOrDefault(true)) {
-                                                                                    notice = "「${pl.name}」可能仍在服务端，请刷新确认"
+                                                        if (pendingDeleteId == pl.listId) {
+                                                            // ---- 确认态：铺满整卡的确认条，避免误触
+                                                            Row(
+                                                                Modifier
+                                                                    .matchParentSize()
+                                                                    .background(
+                                                                        KugouTheme.colors.subtle,
+                                                                        androidx.compose.foundation.shape.RoundedCornerShape(8.dp),
+                                                                    ),
+                                                                horizontalArrangement = Arrangement.Center,
+                                                                verticalAlignment = Alignment.CenterVertically,
+                                                            ) {
+                                                                Text3(
+                                                                    text = "取消",
+                                                                    color = KugouTheme.colors.muted,
+                                                                    modifier = Modifier
+                                                                        .clickable { pendingDeleteId = null }
+                                                                        .padding(horizontal = 10.dp, vertical = 8.dp),
+                                                                )
+                                                                Text3(
+                                                                    text = if (busy) "删除中…" else "确认删除",
+                                                                    color = if (busy) KugouTheme.colors.faint else KugouTheme.colors.danger,
+                                                                    modifier = Modifier
+                                                                        .clickable(enabled = !busy) {
+                                                                            busy = true
+                                                                            val id = pl.listId
+                                                                            val nm = pl.name
+                                                                            ApiExec.run(onResult = { res ->
+                                                                                val ok = res.getOrDefault(false)
+                                                                                busy = false
+                                                                                pendingDeleteId = null
+                                                                                notice = when {
+                                                                                    !ok && KugouApi.lastNeedsLogin -> "请先登录"
+                                                                                    !ok -> "删除失败"
+                                                                                    else -> "已删除「$nm」"
                                                                                 }
-                                                                            }) { PlaylistManage.verifyGone(pl.listId) }
+                                                                                if (ok) {
+                                                                                    reload++
+                                                                                    // 后台确认消失（读缓存延迟）。
+                                                                                    // 注意：Sleep 在独立线程做，不占 ApiExec 池。
+                                                                                    Thread {
+                                                                                        val gone = PlaylistManage.verifyGone(id)
+                                                                                        if (!gone) {
+                                                                                            notice = "「$nm」可能仍在服务端，请刷新确认"
+                                                                                        }
+                                                                                    }.apply { isDaemon = true }.start()
+                                                                                }
+                                                                            }) { PlaylistManage.delete(id) }
                                                                         }
-                                                                    }) { PlaylistManage.delete(pl.listId) }
-                                                                },
-                                                        )
+                                                                        .padding(horizontal = 10.dp, vertical = 8.dp),
+                                                                )
+                                                            }
+                                                        } else {
+                                                            Text3(
+                                                                text = "…",
+                                                                color = KugouTheme.colors.muted,
+                                                                modifier = Modifier
+                                                                    .align(Alignment.TopEnd)
+                                                                    .padding(end = 2.dp)
+                                                                    .background(
+                                                                        KugouTheme.colors.cardBackground,
+                                                                        androidx.compose.foundation.shape.RoundedCornerShape(4.dp),
+                                                                    )
+                                                                    .clickable { pendingDeleteId = pl.listId }
+                                                                    .padding(horizontal = 6.dp, vertical = 2.dp),
+                                                            )
+                                                        }
                                                     }
                                                 }
                                             }
-                                            repeat(3 - row.size) { Spacer(Modifier.weight(1f)) }
+                                            repeat(cols - row.size) { Spacer(Modifier.weight(1f)) }
                                         }
                                     }
+                                }
                                 }
                             }
                         }
@@ -336,8 +383,10 @@ fun RankPage() {
                     list.isEmpty() -> StatusBlock("暂无榜单")
                     else -> {
                         SaltCard(Modifier.fillMaxWidth().padding(horizontal = 16.dp)) {
+                            BoxWithConstraints(Modifier.fillMaxWidth()) {
+                            val cols = coverGridColumns(maxWidth.value)
                             Column(Modifier.fillMaxWidth().padding(12.dp)) {
-                                list.chunked(3).forEach { row ->
+                                gridRows(list, cols).forEach { row ->
                                     Row(Modifier.fillMaxWidth()) {
                                         row.forEach { r ->
                                             CoverGridCard(
@@ -347,9 +396,10 @@ fun RankPage() {
                                                 modifier = Modifier.weight(1f).padding(4.dp),
                                             ) { PageNav.openRank(r.id, r.name) }
                                         }
-                                        repeat(3 - row.size) { Spacer(Modifier.weight(1f)) }
+                                        repeat(cols - row.size) { Spacer(Modifier.weight(1f)) }
                                     }
                                 }
+                            }
                             }
                         }
                     }

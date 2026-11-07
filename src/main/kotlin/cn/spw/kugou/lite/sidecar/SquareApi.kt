@@ -157,35 +157,52 @@ object PlaylistManage {
         return ok
     }
 
-    /** 加歌到歌单（data 参数 `歌名|hash|album_id|mixsongid`，走 query 不走 body —— 上游用 q_str 取参）。 */
-    fun addTrack(globalCollectionId: String, song: Song): Boolean {
+    /**
+     * 加歌到歌单。
+     *
+     * ⚠️ **边车契约（playlist.rs:1107-1136 实测确认）**：要的是
+     * `listid`（数字歌单 id）+ `data`（`歌名|hash|album_id|mixsongid` 逗号分隔多条），
+     * **不是** `global_collection_id` —— 后者只用于读取曲目。
+     */
+    fun addTrack(listId: String, song: Song): Boolean {
         if (!AuthStore.isLoggedIn) {
             KugouApi.markNeedsLogin()
             return false
         }
+        if (listId.isBlank()) return false
         val data = "${song.title}|${song.hash}|${song.albumId}|${song.mixSongId}"
         val root = KugouApi.getRaw(
             "/playlist/tracks/add",
-            mapOf("global_collection_id" to globalCollectionId, "data" to data),
+            mapOf("listid" to listId, "data" to data),
         ) ?: return false
         val ok = JsonLite.asInt(JsonLite.dig(root, "status")) == 1
-        Diag.info(TAG, "加歌「${song.title}」→ $globalCollectionId 受理=$ok")
+        Diag.info(TAG, "加歌「${song.title}」→ listid=$listId 受理=$ok")
         return ok
     }
 
-    /** 从歌单删歌（data 参数 `hash|album_id` 或 fileid 数字；同样走 query）。 */
-    fun delTrack(globalCollectionId: String, song: Song): Boolean {
+    /**
+     * 从歌单删歌。
+     *
+     * ⚠️ **边车契约（playlist.rs:1156-1183 实测确认）**：参数名是
+     * `fileids`（不是 `data`），值是 fileid 数字或 hash 字符串（都支持，
+     * 见该函数的 `match` 分支）。
+     *
+     * 优先用 [Song.fileId]（只有从歌单读出的曲目才有）；没有则回退 hash。
+     */
+    fun delTrack(listId: String, song: Song): Boolean {
         if (!AuthStore.isLoggedIn) {
             KugouApi.markNeedsLogin()
             return false
         }
-        val data = "${song.hash}|${song.albumId}"
+        if (listId.isBlank()) return false
+        val fileIds = if (song.fileId > 0) song.fileId.toString() else song.hash
+        if (fileIds.isBlank()) return false
         val root = KugouApi.getRaw(
             "/playlist/tracks/del",
-            mapOf("global_collection_id" to globalCollectionId, "data" to data),
+            mapOf("listid" to listId, "fileids" to fileIds),
         ) ?: return false
         val ok = JsonLite.asInt(JsonLite.dig(root, "status")) == 1
-        Diag.info(TAG, "删歌「${song.title}」← $globalCollectionId 受理=$ok")
+        Diag.info(TAG, "删歌「${song.title}」← listid=$listId 受理=$ok")
         return ok
     }
 

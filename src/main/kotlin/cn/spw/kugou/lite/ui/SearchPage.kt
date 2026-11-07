@@ -4,6 +4,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -76,6 +77,9 @@ import cn.spw.kugou.lite.sidecar.rememberAsyncState
  * `SearchBox` 的 `onPreviewKeyEvent` 回车拦截不变；只提交不实时搜索，
  * 建议是唯一跟随输入的请求（防抖 + 轻量）。
  */
+/** 搜索结果的封面网格列数（内容区宽度稳定，固定三列）。 */
+private const val SEARCH_GRID_COLUMNS = 3
+
 @Composable
 fun SearchPage(onPick: (Song, List<Song>, Int) -> Unit) {
     var keyword by remember { mutableStateOf("") }
@@ -98,16 +102,23 @@ fun SearchPage(onPick: (Song, List<Song>, Int) -> Unit) {
             suggestState.load { SearchApi.suggest(keyword) }
         }
     }
-    // 懒加载：切到某 Tab 才发该 Tab 的请求；单曲 Tab 在提交时立即加载
+    // 懒加载：切到某 Tab 才发该 Tab 的请求；单曲 Tab 在提交时立即加载。
+    // 判定走 shouldLoadForTab（曾用 `== null` 恒假导致一个请求都不发，见该函数注释）。
     LaunchedEffect(submitted, selectedTab) {
         if (submitted.isBlank()) return@LaunchedEffect
         when (selectedTab) {
-            0 -> if (songState.value == null && songState.value !is Async.Success) {
+            0 -> if (shouldLoadForTab(songState.value)) {
                 songState.load { KugouApi.search(submitted) }
             }
-            1 -> if (artistState.value == null) artistState.load { SearchApi.searchArtists(submitted) }
-            2 -> if (albumState.value == null) albumState.load { SearchApi.searchAlbums(submitted) }
-            3 -> if (specialState.value == null) specialState.load { SearchApi.searchSpecial(submitted) }
+            1 -> if (shouldLoadForTab(artistState.value)) {
+                artistState.load { SearchApi.searchArtists(submitted) }
+            }
+            2 -> if (shouldLoadForTab(albumState.value)) {
+                albumState.load { SearchApi.searchAlbums(submitted) }
+            }
+            3 -> if (shouldLoadForTab(specialState.value)) {
+                specialState.load { SearchApi.searchSpecial(submitted) }
+            }
         }
     }
 
@@ -116,6 +127,8 @@ fun SearchPage(onPick: (Song, List<Song>, Int) -> Unit) {
     val showSuggest = !showResults && keyword.isNotBlank() && !suggestLoaded.isNullOrEmpty()
     val showHot = !showResults && !showSuggest
 
+    BoxWithConstraints(Modifier.fillMaxWidth()) {
+    val showAlbum = maxWidth.value >= TABLE_ALBUM_MIN_WIDTH_DP
     Column(Modifier.fillMaxWidth().padding(bottom = 16.dp)) {
         SaltCard(Modifier.fillMaxWidth().padding(horizontal = 16.dp)) {
             Column(Modifier.fillMaxWidth().padding(16.dp)) {
@@ -195,25 +208,26 @@ fun SearchPage(onPick: (Song, List<Song>, Int) -> Unit) {
             // -------------------------------------------------- 结果态：综合 Tab
             showResults -> {
                 val songTotal = (songState.value as? Async.Success)?.value?.total?.takeIf { it > 0 }
-                val artistTotal = (artistState.value as? Async.Success)?.value?.size?.takeIf { it > 0 }
+                // 歌手端点实测**无 total 字段**，所以不显示计数（不要用当前页条数冒充）
                 val albumTotal = (albumState.value as? Async.Success)?.value?.total?.takeIf { it > 0 }
                 val specialTotal = (specialState.value as? Async.Success)?.value?.total?.takeIf { it > 0 }
                 val tabs = listOf(
                     "单曲" + (songTotal?.let { " $it" } ?: ""),
-                    "歌手" + (artistTotal?.let { " $it" } ?: ""),
+                    "歌手",
                     "专辑" + (albumTotal?.let { " $it" } ?: ""),
                     "歌单" + (specialTotal?.let { " $it" } ?: ""),
                 )
                 SlidingTabBar(tabs = tabs, selected = selectedTab, onSelect = { selectedTab = it })
 
                 when (selectedTab) {
-                    0 -> SongResultList(submitted, songState.value, onPick)
+                    0 -> SongResultList(submitted, songState.value, showAlbum, onPick)
                     1 -> ArtistGrid(artistState.value)
                     2 -> AlbumGrid(albumState.value)
                     3 -> SpecialGrid(specialState.value)
                 }
             }
         }
+    }
     }
 }
 
@@ -222,6 +236,7 @@ fun SearchPage(onPick: (Song, List<Song>, Int) -> Unit) {
 private fun SongResultList(
     query: String,
     state: Async<SearchResult?>,
+    showAlbum: Boolean,
     onPick: (Song, List<Song>, Int) -> Unit,
 ) {
     when (val s = state) {
@@ -247,7 +262,7 @@ private fun SongResultList(
                                     subtitle = song.singer,
                                     album = song.albumName,
                                     duration = song.durationText,
-                                    showAlbum = true,
+                                    showAlbum = showAlbum,
                                     onRowClick = { onPick(song, result.songs, index) },
                                 )
                             }
@@ -273,7 +288,7 @@ private fun ArtistGrid(state: Async<List<cn.spw.kugou.lite.sidecar.Artist>>) {
                 SaltGroupTitle("歌手")
                 SaltCard(Modifier.fillMaxWidth().padding(horizontal = 16.dp)) {
                     Column(Modifier.fillMaxWidth().padding(12.dp)) {
-                        artists.chunked(3).forEach { row ->
+                        gridRows(artists, SEARCH_GRID_COLUMNS).forEach { row ->
                             Row(Modifier.fillMaxWidth()) {
                                 row.forEach { artist ->
                                     CoverGridCard(
@@ -283,7 +298,7 @@ private fun ArtistGrid(state: Async<List<cn.spw.kugou.lite.sidecar.Artist>>) {
                                         modifier = Modifier.weight(1f).padding(4.dp),
                                     ) { PageNav.openArtist(artist.id, artist.name) }
                                 }
-                                repeat(3 - row.size) { Spacer(Modifier.weight(1f)) }
+                                repeat(SEARCH_GRID_COLUMNS - row.size) { Spacer(Modifier.weight(1f)) }
                             }
                         }
                     }
@@ -307,7 +322,7 @@ private fun AlbumGrid(state: Async<SearchApi.SearchPage<AlbumBrief>?>) {
                 SaltGroupTitle("专辑")
                 SaltCard(Modifier.fillMaxWidth().padding(horizontal = 16.dp)) {
                     Column(Modifier.fillMaxWidth().padding(12.dp)) {
-                        page.items.chunked(3).forEach { row ->
+                        gridRows(page.items, SEARCH_GRID_COLUMNS).forEach { row ->
                             Row(Modifier.fillMaxWidth()) {
                                 row.forEach { album ->
                                     CoverGridCard(
@@ -317,7 +332,7 @@ private fun AlbumGrid(state: Async<SearchApi.SearchPage<AlbumBrief>?>) {
                                         modifier = Modifier.weight(1f).padding(4.dp),
                                     ) { PageNav.openAlbum(album.id, album.name) }
                                 }
-                                repeat(3 - row.size) { Spacer(Modifier.weight(1f)) }
+                                repeat(SEARCH_GRID_COLUMNS - row.size) { Spacer(Modifier.weight(1f)) }
                             }
                         }
                     }
@@ -344,7 +359,7 @@ private fun SpecialGrid(state: Async<SearchApi.SearchPage<Playlist>?>) {
                 SaltGroupTitle("歌单")
                 SaltCard(Modifier.fillMaxWidth().padding(horizontal = 16.dp)) {
                     Column(Modifier.fillMaxWidth().padding(12.dp)) {
-                        page.items.chunked(3).forEach { row ->
+                        gridRows(page.items, SEARCH_GRID_COLUMNS).forEach { row ->
                             Row(Modifier.fillMaxWidth()) {
                                 row.forEach { pl ->
                                     CoverGridCard(
@@ -354,7 +369,7 @@ private fun SpecialGrid(state: Async<SearchApi.SearchPage<Playlist>?>) {
                                         modifier = Modifier.weight(1f).padding(4.dp),
                                     ) { PageNav.openPlaylist(pl.id, pl.name) }
                                 }
-                                repeat(3 - row.size) { Spacer(Modifier.weight(1f)) }
+                                repeat(SEARCH_GRID_COLUMNS - row.size) { Spacer(Modifier.weight(1f)) }
                             }
                         }
                     }

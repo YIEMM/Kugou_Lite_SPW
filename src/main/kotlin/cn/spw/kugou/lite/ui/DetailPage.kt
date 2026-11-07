@@ -11,6 +11,10 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
@@ -66,8 +70,16 @@ fun DetailPage() {
 
     val songs = rememberAsyncState<List<Song>>()
     val albums = rememberAsyncState<List<AlbumBrief>>()
+    // 分页：playlistSongs 默认 pagesize=50，超过要能继续加载（审查 Important #16）
+    var page by remember { mutableStateOf(1) }
+    var allSongs by remember { mutableStateOf(ArrayList<Song>()) }
+    var hasMore by remember { mutableStateOf(true) }
+    var loadingMore by remember { mutableStateOf(false) }
 
     LaunchedEffect(type, rankId, playlistId, sectionId, albumId) {
+        page = 1
+        allSongs = ArrayList()
+        hasMore = true
         when (type) {
             "rank" -> songs.load { KugouApi.rankSongs(rankId) }
             "album" -> songs.load { KugouApi.albumSongs(albumId) }
@@ -80,7 +92,15 @@ fun DetailPage() {
                 else -> songs.load { emptyList() }
             }
             // playlist / square 同源：都用 global_collection_id 取曲目
-            else -> songs.load { KugouApi.playlistSongs(playlistId) }
+            else -> songs.load { KugouApi.playlistSongs(playlistId, page = 1) }
+        }
+    }
+    // 首页结果回填 + 判断是否还有下一页（返回满 50 首才认为可能有更多）
+    LaunchedEffect(songs.value) {
+        val s = songs.value
+        if (s is Async.Success) {
+            allSongs = ArrayList(s.value)
+            hasMore = s.value.size >= 50
         }
     }
 
@@ -109,7 +129,32 @@ fun DetailPage() {
                 // ---------------------------------------------- 内容
                 when {
                     type == "discover" && sectionId == "newAlbums" -> AlbumGridBlock(albums.value)
-                    else -> SongTableBlock(songs.value, showAlbum)
+                    else -> {
+                        SongTableBlock(songs.value, allSongs, showAlbum)
+                        // 加载更多（仅歌单/广场这类可能超过一页的来源）
+                        if (hasMore && (type == "playlist" || type == "square")) {
+                            Row(
+                                Modifier.fillMaxWidth().padding(vertical = 12.dp),
+                                horizontalArrangement = Arrangement.Center,
+                            ) {
+                                Text3(
+                                    text = if (loadingMore) "加载中…" else "加载更多",
+                                    color = if (loadingMore) KugouTheme.colors.faint else KugouTheme.colors.text,
+                                    modifier = Modifier.clickable(enabled = !loadingMore) {
+                                        loadingMore = true
+                                        val next = page + 1
+                                        cn.spw.kugou.lite.sidecar.ApiExec.run(onResult = { res ->
+                                            val more = res.getOrNull().orEmpty()
+                                            page = next
+                                            allSongs = ArrayList(allSongs + more)
+                                            hasMore = more.size >= 50
+                                            loadingMore = false
+                                        }) { KugouApi.playlistSongs(playlistId, page = next) }
+                                    },
+                                )
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -147,20 +192,24 @@ private fun ActionChip(label: String, onClick: () -> Unit) {
     }
 }
 
-/** 歌曲表格块：状态 + 行。 */
+/** 歌曲表格块：状态 + 行。@param allSongs 累计已加载（含分页追加），用于建播放队列 */
 @Composable
-private fun SongTableBlock(state: Async<List<Song>>, showAlbum: Boolean) {
+private fun SongTableBlock(
+    state: Async<List<Song>>,
+    allSongs: List<Song>,
+    showAlbum: Boolean,
+) {
     when (val s = state) {
         is Async.Idle, is Async.Loading -> DetailStatus("正在加载…")
         is Async.Failure -> DetailStatus("加载失败：${s.message}")
         is Async.Success -> {
-            val list = s.value
+            val display = allSongs.ifEmpty { s.value }
             when {
-                list.isEmpty() -> DetailStatus(
+                display.isEmpty() -> DetailStatus(
                     if (KugouApi.lastNeedsLogin) "需要登录酷狗账号" else "该列表暂无歌曲",
                 )
                 else -> SaltCardBlock {
-                    list.forEachIndexed { index, song ->
+                    display.forEachIndexed { index, song ->
                         DataTableRow(
                             index = "%02d".format(index + 1),
                             coverUrl = song.coverUrl(120),
@@ -169,7 +218,7 @@ private fun SongTableBlock(state: Async<List<Song>>, showAlbum: Boolean) {
                             album = song.albumName,
                             duration = song.durationText,
                             showAlbum = showAlbum,
-                            onRowClick = { playSongsFromQueue(list, index) },
+                            onRowClick = { playSongsFromQueue(display, index) },
                             cells = DataTableCells(
                                 onArtist = if (song.artists.firstOrNull()?.id?.isNotBlank() == true) {
                                     { PageNav.openArtist(song.artists.first().id, song.artists.first().name) }
@@ -199,7 +248,7 @@ private fun AlbumGridBlock(state: Async<List<AlbumBrief>>) {
             } else {
                 SaltCardBlock {
                     Column(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 4.dp)) {
-                        list.chunked(3).forEach { row ->
+                        gridRows(list, DETAIL_GRID_COLUMNS).forEach { row ->
                             Row(Modifier.fillMaxWidth()) {
                                 row.forEach { album ->
                                     CoverGridCard(
@@ -209,7 +258,7 @@ private fun AlbumGridBlock(state: Async<List<AlbumBrief>>) {
                                         modifier = Modifier.weight(1f).padding(4.dp),
                                     ) { PageNav.openAlbum(album.id, album.name) }
                                 }
-                                repeat(3 - row.size) { Spacer(Modifier.weight(1f)) }
+                                repeat(DETAIL_GRID_COLUMNS - row.size) { Spacer(Modifier.weight(1f)) }
                             }
                         }
                     }
@@ -218,6 +267,9 @@ private fun AlbumGridBlock(state: Async<List<AlbumBrief>>) {
         }
     }
 }
+
+/** 详情页专辑网格列数（内容区宽度稳定，固定三列）。 */
+private const val DETAIL_GRID_COLUMNS = 3
 
 /** 统一的外层卡片（保持 16dp 水平留白）。 */
 @Composable

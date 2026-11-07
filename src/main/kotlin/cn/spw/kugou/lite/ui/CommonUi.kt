@@ -71,6 +71,45 @@ internal data class DataTableCells(
 )
 
 /**
+ * 懒加载判定：这个 Tab 现在**是否需要发请求**。
+ *
+ * ## 为什么单独抽成函数
+ *
+ * 曾写成 `if (state.value == null) load()` —— `MutableAsyncState.value`
+ * 的静态类型是非空 `Async<T>`（初值 `Async.Idle`），该条件**恒为 false**，
+ * 搜索页四个 Tab 因此永不发请求、永久停在「正在搜索…」。
+ * 编译能过，既有测试也全绿（这是判空写错，不是逻辑缺失）。
+ *
+ * 规则：Idle（从未加载）与 Failure（失败可重试）要发；
+ * Loading（在飞）与 Success（已有数据）不发。
+ */
+internal fun <T> shouldLoadForTab(state: cn.spw.kugou.lite.sidecar.Async<T>): Boolean =
+    when (state) {
+        is cn.spw.kugou.lite.sidecar.Async.Idle -> true
+        is cn.spw.kugou.lite.sidecar.Async.Failure -> true
+        is cn.spw.kugou.lite.sidecar.Async.Loading -> false
+        is cn.spw.kugou.lite.sidecar.Async.Success -> false
+    }
+
+/**
+ * 封面网格的列数（按内容宽度）。
+ *
+ * 复用发现页的断点口径（`discoverColumnCount`：每列 ≥300dp、上限 3），
+ * 但网格卡最小可用宽度比区块卡更窄，所以这里用 240dp 一档、上限 4。
+ *
+ * **不要在页面里写死 `chunked(3)`** —— 窄窗口会挤成三列小图，
+ * 违反规格 §8.1「窄窗口降级正常」。
+ */
+internal fun coverGridColumns(availableWidthDp: Float): Int {
+    if (availableWidthDp <= 0f) return 1
+    return (availableWidthDp / 240f).toInt().coerceIn(1, 4)
+}
+
+/** 把列表按列数切行（供 `Column + Row` 手写网格用，避免 LazyVerticalGrid 的嵌套滚动问题）。 */
+internal fun <T> gridRows(items: List<T>, columns: Int): List<List<T>> =
+    items.chunked(columns.coerceAtLeast(1))
+
+/**
  * 页头横幅：大封面 + 标题 + 元信息 + 操作组。
  *
  * 自带 `padding(horizontal = 16.dp)`（布局铁律：外层 Column 不加水平 padding，

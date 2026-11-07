@@ -41,6 +41,8 @@ class KugouLitePlugin(pluginContext: PluginContext) : SpwPlugin(pluginContext) {
             AuthStore.configure(dir)
             Settings.configure(dir)
             DiscoverConfig.configure(dir)
+        // 关注状态的本地记忆（服务端 user_status 不回落，见裁决 R3）
+        cn.spw.kugou.lite.ui.FollowStore.configure(dir)
             // 音频下载缓存：宿主要用本地文件路径才能可靠播放（见 AudioCache 类文档）
             AudioCache.configure(dir)
             CoverLoader.configure(dir)

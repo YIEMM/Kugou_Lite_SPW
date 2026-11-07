@@ -111,7 +111,7 @@ fun SquarePage() {
             if (loaded.isNotEmpty()) {
                 SaltCard(Modifier.fillMaxWidth().padding(horizontal = 16.dp)) {
                     Column(Modifier.fillMaxWidth().padding(12.dp)) {
-                        loaded.chunked(3).forEach { row ->
+                        gridRows(loaded, SQUARE_GRID_COLUMNS).forEach { row ->
                             Row(Modifier.fillMaxWidth()) {
                                 row.forEach { pl ->
                                     CoverGridCard(
@@ -121,7 +121,7 @@ fun SquarePage() {
                                         modifier = Modifier.weight(1f).padding(4.dp),
                                     ) { PageNav.openPlaylist(pl.collectionId, pl.name) }
                                 }
-                                repeat(3 - row.size) { Spacer(Modifier.weight(1f)) }
+                                repeat(SQUARE_GRID_COLUMNS - row.size) { Spacer(Modifier.weight(1f)) }
                             }
                         }
                     }
@@ -202,6 +202,9 @@ fun HistoryPage() {
         }
     }
 }
+
+/** 广场封面网格列数（内容区宽度稳定，固定三列）。 */
+private const val SQUARE_GRID_COLUMNS = 3
 
 /** 标签 chip。 */
 @Composable
