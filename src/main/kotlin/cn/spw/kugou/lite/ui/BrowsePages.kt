@@ -140,7 +140,7 @@ private fun StatusBlock(text: String) {
             Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 24.dp),
             contentAlignment = Alignment.CenterStart,
         ) {
-            Text3(text, color = Color(0xFF9A9A9A))
+            Text3(text, color = KugouTheme.colors.muted)
         }
     }
 }
@@ -310,7 +310,7 @@ internal fun SongRow(song: Song, onClick: () -> Unit) {
     ) {
         SongCover(song.coverUrl(120))
         Column(Modifier.padding(start = 12.dp).weight(1f)) {
-            Text3(text = song.title, color = Color(0xFFEDEDED))
+            Text3(text = song.title, color = KugouTheme.colors.text)
 
             FlowRow(
                 modifier = Modifier.padding(top = 2.dp),
@@ -322,38 +322,38 @@ internal fun SongRow(song: Song, onClick: () -> Unit) {
                 }
                 artists.forEachIndexed { index, artist ->
                     if (index > 0) {
-                        Text3("、", color = Color(0xFF9A9A9A))
+                        Text3("、", color = KugouTheme.colors.muted)
                     }
                     if (artist.clickable) {
                         Text3(
                             text = artist.name,
-                            color = Color(0xFF6FA8DC),
+                            color = KugouTheme.colors.text,
                             modifier = Modifier.clickable {
                                 PageNav.openArtist(artist.id, artist.name)
                             },
                         )
                     } else {
-                        Text3(text = artist.name, color = Color(0xFF9A9A9A))
+                        Text3(text = artist.name, color = KugouTheme.colors.muted)
                     }
                 }
                 if (song.durationSec > 0) {
-                    Text3(text = " · ${song.durationText}", color = Color(0xFF9A9A9A))
+                    Text3(text = " · ${song.durationText}", color = KugouTheme.colors.muted)
                 }
                 // 专辑名可点（有 albumId 时）；用「·」与时长分隔开，
                 // 避免和上面一行歌手挤在一起。
                 val album = song.albumName
                 if (!album.isNullOrBlank()) {
-                    Text3(text = " · ", color = Color(0xFF9A9A9A))
+                    Text3(text = " · ", color = KugouTheme.colors.muted)
                     if (song.albumId.isNotBlank()) {
                         Text3(
                             text = album,
-                            color = Color(0xFF6FA8DC),
+                            color = KugouTheme.colors.text,
                             modifier = Modifier.clickable {
                                 PageNav.openAlbum(song.albumId, album)
                             },
                         )
                     } else {
-                        Text3(text = album, color = Color(0xFF9A9A9A))
+                        Text3(text = album, color = KugouTheme.colors.muted)
                     }
                 }
             }
@@ -395,8 +395,8 @@ private fun FavoriteButton(song: Song) {
             else -> "♡"
         },
         color = when {
-            favorited -> Color(0xFFE8736A)
-            else -> Color(0xFF6E6E6E)
+            favorited -> KugouTheme.colors.favorite
+            else -> KugouTheme.colors.faint
         },
         modifier = Modifier
             .padding(start = 8.dp)
@@ -434,7 +434,7 @@ private fun SongCover(url: String?) {
     Box(
         Modifier
             .size(48.dp)
-            .background(Color(0xFF2E2E2E), RoundedCornerShape(6.dp)),
+            .background(KugouTheme.colors.coverPlaceholder, RoundedCornerShape(6.dp)),
         contentAlignment = Alignment.Center,
     ) {
         if (bitmap != null) {
@@ -446,7 +446,7 @@ private fun SongCover(url: String?) {
             )
         } else {
             // 占位音符：与播放栏的 ♪ 呼应，避免空白方块
-            Text3(text = "♪", color = Color(0xFF6E6E6E))
+            Text3(text = "♪", color = KugouTheme.colors.faint)
         }
     }
 }
@@ -464,11 +464,11 @@ internal fun ListRow(
             .let { if (onClick != null) it.clickable { onClick() } else it }
             .padding(horizontal = 16.dp, vertical = 10.dp),
     ) {
-        Text3(text = title, color = Color(0xFFEDEDED))
+        Text3(text = title, color = KugouTheme.colors.text)
         if (subtitle.isNotBlank()) {
             Text3(
                 text = subtitle,
-                color = Color(0xFF9A9A9A),
+                color = KugouTheme.colors.muted,
                 modifier = Modifier.padding(top = 2.dp),
             )
         }

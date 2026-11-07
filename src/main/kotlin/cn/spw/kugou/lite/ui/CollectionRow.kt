@@ -65,7 +65,7 @@ fun CollectionRow(
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(6.dp),
             ) {
-                Text3(text = title, color = Color(0xFFEDEDED))
+                Text3(text = title, color = KugouTheme.colors.text)
                 if (!badge.isNullOrBlank()) {
                     Text3(text = badge, color = Color(0xFFE8736A))
                 }
@@ -73,12 +73,12 @@ fun CollectionRow(
             if (subtitle.isNotBlank()) {
                 Text3(
                     text = subtitle,
-                    color = Color(0xFF9A9A9A),
+                    color = KugouTheme.colors.muted,
                     modifier = Modifier.padding(top = 3.dp),
                 )
             }
         }
-        Text3("›", color = Color(0xFF5E5E5E))
+        Text3("›", color = KugouTheme.colors.faint)
     }
 }
 
@@ -95,7 +95,7 @@ fun CoverBox(url: String?, sizeDp: Int, cornerDp: Int = 8) {
     Box(
         Modifier
             .size(sizeDp.dp)
-            .background(Color(0xFF2E2E2E), shape),
+            .background(KugouTheme.colors.coverPlaceholder, shape),
         contentAlignment = Alignment.Center,
     ) {
         if (bitmap != null) {
@@ -106,7 +106,7 @@ fun CoverBox(url: String?, sizeDp: Int, cornerDp: Int = 8) {
                 modifier = Modifier.size(sizeDp.dp).clip(shape),
             )
         } else {
-            Text3("♪", color = Color(0xFF6E6E6E))
+            Text3("♪", color = KugouTheme.colors.faint)
         }
     }
 }

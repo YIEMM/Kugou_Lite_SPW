@@ -152,41 +152,56 @@ private fun HomePage() {
                 .fillMaxWidth()
                 .padding(bottom = 16.dp),
         ) {
-            // 顶栏：大标题 + 副标题，建立页面层级
-            HomeHeader()
+            // ------------------------------------------------------ 顶栏
+            //
+            // 用宿主原生 SaltText，字号/字重/颜色全部由 SaltTheme 决定。
+            // 不自己指定颜色，浅色主题下才不会出错。
+            Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 6.dp)) {
+                SaltText("Kugou Lite")
+                SaltText(
+                    "酷狗曲库接入 Salt Player",
+                    modifier = Modifier.padding(top = 2.dp),
+                )
+            }
 
-            // 快捷入口：搜索和每日推荐是最高频动作，做成并排大按钮
-            SectionTitle("快速开始")
-            Row(
-                Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 16.dp),
-                horizontalArrangement = Arrangement.spacedBy(10.dp),
-            ) {
-                QuickAction(
-                    title = "搜索",
-                    subtitle = "歌名 / 歌手",
-                    modifier = Modifier.weight(1f),
+            // ------------------------------------------------------ 搜索与发现
+            SaltGroupTitle("搜索与发现")
+            SaltCard(Modifier.fillMaxWidth().padding(horizontal = 16.dp)) {
+                SaltItem(
+                    title = "搜索歌曲",
+                    subtitle = "按歌名、歌手搜索在线曲库",
+                    modifier = Modifier.fillMaxWidth(),
                     onClick = { PageNav.go(KugouLiteTab.Search) },
                 )
-                QuickAction(
+                SaltItem(
                     title = "每日推荐",
-                    subtitle = "今天为你挑的",
-                    modifier = Modifier.weight(1f),
+                    subtitle = "每天更新的推荐歌单",
+                    modifier = Modifier.fillMaxWidth(),
                     onClick = { PageNav.go(KugouLiteTab.Daily) },
                 )
             }
 
-            SectionTitle("我的音乐")
-            ThemeCard(Modifier.padding(horizontal = 16.dp)) {
-                HomeEntry("我的歌单", "自建歌单与收藏") { PageNav.go(KugouLiteTab.Playlists) }
-                HairLine()
-                HomeEntry("排行榜", "飙升榜 / 热歌榜") { PageNav.go(KugouLiteTab.Ranks) }
+            // ------------------------------------------------------ 我的音乐
+            SaltGroupTitle("我的音乐")
+            SaltCard(Modifier.fillMaxWidth().padding(horizontal = 16.dp)) {
+                SaltItem(
+                    title = "我的歌单",
+                    subtitle = "酷狗账号里的自建歌单与收藏",
+                    modifier = Modifier.fillMaxWidth(),
+                    onClick = { PageNav.go(KugouLiteTab.Playlists) },
+                )
+                SaltItem(
+                    title = "排行榜",
+                    subtitle = "飙升榜、热歌榜等官方榜单",
+                    modifier = Modifier.fillMaxWidth(),
+                    onClick = { PageNav.go(KugouLiteTab.Ranks) },
+                )
             }
 
-            SectionTitle("账户")
-            ThemeCard(Modifier.padding(horizontal = 16.dp)) {
-                HomeEntry(
+            // ------------------------------------------------------ 账户
+            SaltGroupTitle("账户")
+            SaltCard(Modifier.fillMaxWidth().padding(horizontal = 16.dp)) {
+                SaltItem(
                     title = if (AuthStore.isLoggedIn) {
                         "已登录：" + (AuthStore.nickname ?: AuthStore.userId)
                     } else {
@@ -197,98 +212,37 @@ private fun HomePage() {
                     } else {
                         "扫码登录后可取流、读歌单、收藏"
                     },
-                ) { PageNav.go(KugouLiteTab.Login) }
-                HairLine()
-                HomeEntry("设置", "音质、缓存、退出登录") { PageNav.go(KugouLiteTab.Settings) }
-                HairLine()
-                Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp)) {
-                    CaptionText(
+                    modifier = Modifier.fillMaxWidth(),
+                    onClick = { PageNav.go(KugouLiteTab.Login) },
+                )
+                SaltItem(
+                    title = "设置",
+                    subtitle = "音质、缓存、退出登录",
+                    modifier = Modifier.fillMaxWidth(),
+                    onClick = { PageNav.go(KugouLiteTab.Settings) },
+                )
+                // 在线服务状态：作为信息放在卡片底部
+                Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 10.dp)) {
+                    SaltText(
                         text = when (val s = sidecarState.value) {
                             is Async.Loading -> "正在准备在线服务…"
                             else -> SidecarManager.statusText()
                         },
-                        color = KugouTheme.colors.faint,
                     )
                 }
             }
 
-            SectionTitle("关于")
-            ThemeCard(Modifier.padding(horizontal = 16.dp)) {
+            // ------------------------------------------------------ 关于
+            SaltGroupTitle("关于")
+            SaltCard(Modifier.fillMaxWidth().padding(horizontal = 16.dp)) {
                 Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp)) {
-                    BodyText("Kugou Lite", color = KugouTheme.colors.text, size = 14)
-                    CaptionText(
-                        text = "酷狗曲库接入 Salt Player。搜索、歌单、榜单、逐字歌词。",
-                        color = KugouTheme.colors.muted,
+                    SaltText("Kugou Lite")
+                    SaltText(
+                        "酷狗曲库接入 Salt Player。搜索、歌单、榜单、逐字歌词。",
                         modifier = Modifier.padding(top = 4.dp),
                     )
                 }
             }
         }
     }
-}
-
-/** 主页顶栏。 */
-@Composable
-private fun HomeHeader() {
-    val c = KugouTheme.colors
-    Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp)) {
-        BodyText("Kugou Lite", color = c.text, size = 21, weight = 600)
-        CaptionText(
-            text = "酷狗曲库接入 Salt Player",
-            color = c.muted,
-            modifier = Modifier.padding(top = 3.dp),
-        )
-    }
-}
-
-/** 快捷入口按钮。用 accentSoft 作底色，与卡片区分开形成层级。 */
-@Composable
-private fun QuickAction(
-    title: String,
-    subtitle: String,
-    modifier: Modifier = Modifier,
-    onClick: () -> Unit,
-) {
-    val c = KugouTheme.colors
-    Column(
-        modifier
-            .clip(RoundedCornerShape(10.dp))
-            .background(c.accentSoft)
-            .border(1.dp, c.line, RoundedCornerShape(10.dp))
-            .clickable { onClick() }
-            .padding(horizontal = 14.dp, vertical = 13.dp),
-        verticalArrangement = Arrangement.spacedBy(3.dp),
-    ) {
-        BodyText(title, color = c.accent, size = 15, weight = 500)
-        CaptionText(subtitle, color = c.muted, size = 11)
-    }
-}
-
-/** 主页列表项。 */
-@Composable
-private fun HomeEntry(
-    title: String,
-    subtitle: String,
-    onClick: () -> Unit,
-) {
-    val c = KugouTheme.colors
-    HoverRow(onClick = onClick) {
-        Column(Modifier.weight(1f)) {
-            BodyText(title, color = c.text, size = 14)
-            CaptionText(subtitle, color = c.muted, modifier = Modifier.padding(top = 2.dp))
-        }
-        CaptionText("\u203a", color = c.faint)
-    }
-}
-
-/** 卡片内分隔线。 */
-@Composable
-private fun HairLine() {
-    Box(
-        Modifier
-            .fillMaxWidth()
-            .padding(horizontal = 16.dp)
-            .height(1.dp)
-            .background(KugouTheme.colors.line),
-    )
 }

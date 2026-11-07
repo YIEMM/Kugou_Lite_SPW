@@ -90,7 +90,7 @@ fun ArtistPage() {
 private fun SortTab(label: String, selected: Boolean, onClick: () -> Unit) {
     Text3(
         text = label,
-        color = if (selected) Color(0xFF4CC2FF) else Color(0xFF9A9A9A),
+        color = if (selected) KugouTheme.colors.text else KugouTheme.colors.muted,
         modifier = Modifier.clickable { onClick() },
     )
 }

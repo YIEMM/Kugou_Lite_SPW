@@ -116,19 +116,19 @@ fun LoginPage() {
         SaltGroupTitle("扫码登录")
         SaltCard(Modifier.fillMaxWidth().padding(horizontal = 16.dp)) {
             Column(Modifier.fillMaxWidth().padding(16.dp)) {
-                Text3(text = statusText, color = Color(0xFFEDEDED))
+                Text3(text = statusText, color = KugouTheme.colors.text)
 
                 if (AuthStore.isLoggedIn) {
                     Text3(
                         text = "当前已登录：${AuthStore.nickname ?: AuthStore.userId}",
-                        color = Color(0xFF8FE3A8),
+                        color = KugouTheme.colors.text,
                         modifier = Modifier.padding(top = 8.dp),
                     )
                 }
 
                 Text3(
                     text = "登录后可取流播放、读取我的歌单。token 保存在本地插件目录。",
-                    color = Color(0xFF9A9A9A),
+                    color = KugouTheme.colors.muted,
                     modifier = Modifier.padding(top = 8.dp),
                 )
 
@@ -146,7 +146,7 @@ fun LoginPage() {
 
                 Text3(
                     text = "刷新二维码",
-                    color = Color(0xFF4CC2FF),
+                    color = KugouTheme.colors.text,
                     modifier = Modifier
                         .padding(top = 12.dp)
                         .clickable { generation++ },

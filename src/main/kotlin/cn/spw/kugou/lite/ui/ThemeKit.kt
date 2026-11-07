@@ -123,9 +123,11 @@ fun ThemeCard(
 }
 
 /**
- * 分组标题（带左侧强调条）。
+ * 分组标题（左侧一小段中性竖条）。
  *
- * 比纯文字标题更有层次：3dp 的强调色竖条 + 13sp 中等字重标题。
+ * 参考 SPW-Listen-Stats 的 SectionHeading：标题用 `text`，
+ * 图标用 `muted`。竖条用 `faint` 中性灰，不染蓝 —— 蓝色在 Salt 里
+ * 只作极少量点缀，大面积使用会显得不像原生界面。
  */
 @Composable
 fun SectionTitle(
@@ -147,7 +149,7 @@ fun SectionTitle(
                     .width(3.dp)
                     .height(13.dp)
                     .clip(RoundedCornerShape(2.dp))
-                    .background(c.accent),
+                    .background(c.faint),
             )
             BodyText(
                 text = title,
@@ -198,7 +200,9 @@ fun HoverRow(
 /**
  * 分段控件（胶囊形单选）。
  *
- * 用于「最热 / 最新」这类二选一。选中项用强调色底 + 反色文字。
+ * 参考实现的 SegmentedControl：选中项是一块**中性灰底** + 细描边，
+ * 文字始终是 `text`。不换成蓝色底 —— 那是 Material 风格，
+ * 不是 Salt Player 的观感。
  */
 @Composable
 fun SegmentedControl(
@@ -212,6 +216,7 @@ fun SegmentedControl(
         modifier
             .clip(RoundedCornerShape(8.dp))
             .background(c.subtle)
+            .border(1.dp, c.line, RoundedCornerShape(8.dp))
             .padding(3.dp),
         horizontalArrangement = Arrangement.spacedBy(2.dp),
     ) {
@@ -220,14 +225,18 @@ fun SegmentedControl(
             Box(
                 Modifier
                     .clip(RoundedCornerShape(6.dp))
-                    .background(if (selected) c.accent else Color.Transparent)
+                    .background(if (selected) c.selectedBackground else Color.Transparent)
+                    .then(
+                        if (selected) Modifier.border(1.dp, c.line, RoundedCornerShape(6.dp))
+                        else Modifier,
+                    )
                     .clickable { onSelect(index) }
                     .padding(horizontal = 14.dp, vertical = 5.dp),
             ) {
                 BasicText(
                     text = label,
                     style = TextStyle(
-                        color = if (selected) c.cardBackground else c.muted,
+                        color = if (selected) c.text else c.muted,
                         fontSize = 12.sp,
                     ),
                 )

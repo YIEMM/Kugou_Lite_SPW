@@ -84,14 +84,14 @@ fun SettingsPage() {
                 horizontalArrangement = Arrangement.SpaceBetween,
             ) {
                 Column {
-                    Text3("音频缓存", color = Color(0xFFEDEDED))
+                    Text3("音频缓存", color = KugouTheme.colors.text)
                     Text3(
                         "已下载的歌曲与封面",
-                        color = Color(0xFF9A9A9A),
+                        color = KugouTheme.colors.muted,
                         modifier = Modifier.padding(top = 2.dp),
                     )
                 }
-                Text3(cacheText, color = Color(0xFF9A9A9A))
+                Text3(cacheText, color = KugouTheme.colors.muted)
             }
             Row(
                 Modifier
@@ -108,7 +108,7 @@ fun SettingsPage() {
                     }
                     .padding(horizontal = 16.dp, vertical = 12.dp),
             ) {
-                Text3("清除缓存", color = Color(0xFF4CC2FF))
+                Text3("清除缓存", color = KugouTheme.colors.text)
             }
         }
 
@@ -122,11 +122,11 @@ fun SettingsPage() {
                     } else {
                         "未登录"
                     },
-                    color = Color(0xFFEDEDED),
+                    color = KugouTheme.colors.text,
                 )
                 Text3(
                     text = "登录后可取流播放、读取我的歌单",
-                    color = Color(0xFF9A9A9A),
+                    color = KugouTheme.colors.muted,
                     modifier = Modifier.padding(top = 2.dp),
                 )
             }
@@ -141,7 +141,7 @@ fun SettingsPage() {
                         }
                         .padding(horizontal = 16.dp, vertical = 12.dp),
                 ) {
-                    Text3("退出登录", color = Color(0xFFE8736A))
+                    Text3("退出登录", color = KugouTheme.colors.danger)
                 }
             }
         }
@@ -166,17 +166,17 @@ private fun QualityRow(
         Column(Modifier.weight(1f)) {
             Text3(
                 text = quality.label,
-                color = if (selected) Color(0xFF4CC2FF) else Color(0xFFEDEDED),
+                color = KugouTheme.colors.text,
             )
             Text3(
                 text = quality.hint,
-                color = Color(0xFF9A9A9A),
+                color = KugouTheme.colors.muted,
                 modifier = Modifier.padding(top = 2.dp),
             )
         }
         // 选中标记：用字符而不是图标，避免依赖宿主图标资源
         if (selected) {
-            Text3("✓", color = Color(0xFF4CC2FF))
+            Text3("✓", color = KugouTheme.colors.text)
         }
     }
 }

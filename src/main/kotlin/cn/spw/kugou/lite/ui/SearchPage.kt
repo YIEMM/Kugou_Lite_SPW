@@ -125,7 +125,7 @@ private fun SearchBox(
         Modifier
             .fillMaxWidth()
             .height(38.dp)
-            .background(Color(0xFF2A2A2A), RoundedCornerShape(8.dp))
+            .background(KugouTheme.colors.subtle, RoundedCornerShape(8.dp))
             .padding(horizontal = 12.dp),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.SpaceBetween,
@@ -134,8 +134,8 @@ private fun SearchBox(
             value = value,
             onValueChange = onValueChange,
             singleLine = true,
-            textStyle = TextStyle(color = Color(0xFFEDEDED), fontSize = 14.sp),
-            cursorBrush = SolidColor(Color(0xFF4CC2FF)),
+            textStyle = TextStyle(color = KugouTheme.colors.text, fontSize = 14.sp),
+            cursorBrush = SolidColor(KugouTheme.colors.accent),
             modifier = Modifier
                 .weight(1f)
                 .onPreviewKeyEvent { event ->
@@ -151,7 +151,7 @@ private fun SearchBox(
         )
         Text3(
             text = "搜索",
-            color = Color(0xFF4CC2FF),
+            color = KugouTheme.colors.text,
             modifier = Modifier.clickable { onSubmit() },
         )
     }
@@ -162,7 +162,7 @@ private fun SearchBox(
 private fun StatusCard(message: String) {
     SaltCard(Modifier.fillMaxWidth().padding(horizontal = 16.dp)) {
         Column(Modifier.fillMaxWidth().padding(16.dp)) {
-            Text3(text = message, color = Color(0xFF9A9A9A))
+            Text3(text = message, color = KugouTheme.colors.muted)
         }
     }
 }

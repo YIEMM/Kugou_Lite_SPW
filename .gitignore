@@ -54,3 +54,6 @@ sidecar/bridge/build/
 # 它们是**构建产物**且体积 4MB+，不进版本库；
 # 打包前必须跑 build_native.ps1（Gradle 的 checkNativeLibs 会校验）。
 src/main/resources/native/*.dll
+
+# Brainstorm visual companion session files (prototype HTML, event log)
+.superpowers/

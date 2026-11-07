@@ -57,7 +57,22 @@ data class KugouColors(
     val subtle: Color,
     /** 悬停高亮。 */
     val hover: Color,
-    /** 强调色（可点文字、选中态）。 */
+    /**
+     * 分段控件的选中底色（**中性灰**，不是蓝色）。
+     *
+     * 参考实现用 `selectedControlBackground`：选中项只是一块略亮的灰底，
+     * 靠底色深浅和细描边表达状态，不靠换色。
+     */
+    val selectedBackground: Color,
+    /**
+     * 强调色 —— **克制使用**。
+     *
+     * Salt Player 的设计语言是中性灰为主，蓝色只作极少量功能点缀：
+     * 文字输入光标、进度条、图表数据点。
+     *
+     * **不要**拿它染：分组标题、可点击文字、卡片边框、快捷入口底色。
+     * 这些在宿主原生 UI 里全是 `text` / `muted` / `subtle` 这些中性色。
+     */
     val accent: Color,
     /** 强调色的淡化版（选中背景）。 */
     val accentSoft: Color,
@@ -80,8 +95,9 @@ val DarkKugouColors = KugouColors(
     line = Color(0xFF37393E),
     subtle = Color(0xFF2B2D32),
     hover = Color(0xFF34363C),
+    selectedBackground = Color(0xFF3A3C42),
     accent = Color(0xFF79B5FF),
-    accentSoft = Color(0x1779B5FF),
+    accentSoft = Color(0x1479B5FF),
     danger = Color(0xFFFF8A8A),
     favorite = Color(0xFFE8736A),
     coverPlaceholder = Color(0xFF2E2E32),
@@ -98,6 +114,7 @@ val LightKugouColors = KugouColors(
     line = Color(0xFFE9EAED),
     subtle = Color(0xFFF5F6F8),
     hover = Color(0xFFF1F3F6),
+    selectedBackground = Color(0xFFE4E6EA),
     accent = Color(0xFF2777D8),
     accentSoft = Color(0x132777D8),
     danger = Color(0xFFCF4545),

@@ -54,12 +54,12 @@ fun AlbumPage() {
                 Column(Modifier.padding(start = 14.dp)) {
                     Text3(
                         text = album?.name ?: PageNav.detailTitle.ifBlank { "专辑" },
-                        color = Color(0xFFEDEDED),
+                        color = KugouTheme.colors.text,
                     )
                     if (album != null) {
                         Text3(
                             text = album.artist,
-                            color = Color(0xFF9A9A9A),
+                            color = KugouTheme.colors.muted,
                             modifier = Modifier.padding(top = 4.dp),
                         )
                         val meta = buildList {
@@ -70,7 +70,7 @@ fun AlbumPage() {
                         if (meta.isNotBlank()) {
                             Text3(
                                 text = meta,
-                                color = Color(0xFF9A9A9A),
+                                color = KugouTheme.colors.muted,
                                 modifier = Modifier.padding(top = 2.dp),
                             )
                         }
@@ -118,7 +118,7 @@ private fun AlbumCover(url: String?) {
     Box(
         Modifier
             .size(120.dp)
-            .background(Color(0xFF2E2E2E), RoundedCornerShape(8.dp)),
+            .background(KugouTheme.colors.coverPlaceholder, RoundedCornerShape(8.dp)),
         contentAlignment = Alignment.Center,
     ) {
         if (bitmap != null) {
@@ -129,7 +129,7 @@ private fun AlbumCover(url: String?) {
                 modifier = Modifier.size(120.dp).clip(RoundedCornerShape(8.dp)),
             )
         } else {
-            Text3("♪", color = Color(0xFF6E6E6E))
+            Text3("♪", color = KugouTheme.colors.faint)
         }
     }
 }
@@ -152,10 +152,10 @@ private fun AlbumTrackRow(index: Int, song: Song, onClick: () -> Unit) {
     ) {
         Text3(
             text = index.toString().padStart(2, '0'),
-            color = Color(0xFF6E6E6E),
+            color = KugouTheme.colors.faint,
         )
         Column(Modifier.weight(1f)) {
-            Text3(text = song.title, color = Color(0xFFEDEDED))
+            Text3(text = song.title, color = KugouTheme.colors.text)
             val sub = buildString {
                 append(song.singer)
                 if (song.durationSec > 0) {
@@ -165,7 +165,7 @@ private fun AlbumTrackRow(index: Int, song: Song, onClick: () -> Unit) {
             }
             Text3(
                 text = sub,
-                color = Color(0xFF9A9A9A),
+                color = KugouTheme.colors.muted,
                 modifier = Modifier.padding(top = 2.dp),
             )
         }
