@@ -39,6 +39,9 @@ import cn.spw.kugou.lite.sidecar.Id3CoverWriter
 import cn.spw.kugou.lite.sidecar.KugouApi
 import cn.spw.kugou.lite.sidecar.MutableAsyncState
 import cn.spw.kugou.lite.sidecar.Playlist
+import cn.spw.kugou.lite.sidecar.PlaylistManage
+import androidx.compose.ui.unit.sp
+import androidx.compose.foundation.layout.Spacer
 import cn.spw.kugou.lite.sidecar.Rank
 import cn.spw.kugou.lite.sidecar.Song
 import cn.spw.kugou.lite.sidecar.rememberAsyncState
@@ -60,10 +63,37 @@ import cn.spw.kugou.lite.sidecar.rememberAsyncState
  * 需要登录（`/user/playlist` 走账号态）。未登录或 token 过期时显示
  * 引导文案而不是空列表 —— 否则用户会以为「没有歌单」而不是「需要重新登录」。
  */
+/**
+ * 我的音乐（原「我的歌单」）。
+ *
+ * ## 2026-11 改版
+ *
+ * 三段式分组升级为：**顶部统计卡**（我喜欢/自建/收藏 计数）+ **过滤 Tab**
+ * （全部/我喜欢/自建/收藏）+ **封面网格**（每项真实封面 + 名称 + 曲目数）。
+ * 工具栏右侧「＋」新建歌单（[PlaylistManage.create]），自建歌单行尾「…」
+ * 弹菜单（删除；重命名因上游 30203 暂不提供，见裁决 R1）。
+ *
+ * ## 为什么仍按 listid 识别系统歌单
+ *
+ * 酷狗把「我喜欢」「默认收藏」都实现为自建歌单（`type=0`），只有 listid
+ * 固定（我喜欢=2 / 默认收藏=1）。按名字识别会被用户改名破坏。
+ *
+ * ## 为什么删除后不回读
+ *
+ * `/playlist/del` 成功后读缓存有 3–8 秒延迟（实测），立即回读会看到旧数据。
+ * UI 先本地剔除再后台 [PlaylistManage.verifyGone] 轮询确认，失败才回滚提示。
+ */
 @Composable
 fun PlaylistPage() {
     val state = rememberAsyncState<List<Playlist>?>()
-    LaunchedEffect(Unit) { state.load { KugouApi.userPlaylists() } }
+    var reload by remember { mutableStateOf(0) }
+    var filter by remember { mutableStateOf(0) }              // 0全部 1我喜欢 2自建 3收藏
+    var creating by remember { mutableStateOf(false) }
+    var newName by remember { mutableStateOf("") }
+    var busy by remember { mutableStateOf(false) }
+    var notice by remember { mutableStateOf<String?>(null) }
+
+    LaunchedEffect(reload) { state.load { KugouApi.userPlaylists() } }
 
     Column(Modifier.fillMaxWidth().padding(bottom = 16.dp)) {
         when (val s = state.value) {
@@ -83,45 +113,142 @@ fun PlaylistPage() {
                         val own = list.filter { it.isOwn && !system.contains(it) }
                         val collected = list.filter { !it.isOwn }
 
-                        if (system.isNotEmpty()) {
-                            SaltGroupTitle("我的收藏夹")
+                        // ------------------------------------------- 统计卡
+                        Row(
+                            Modifier.fillMaxWidth().padding(horizontal = 16.dp),
+                            horizontalArrangement = Arrangement.spacedBy(10.dp),
+                        ) {
+                            StatCard("${system.firstOrNull { it.isFavorites }?.songCount ?: 0}", "我喜欢", Modifier.weight(1f))
+                            StatCard("${own.size}", "自建歌单", Modifier.weight(1f))
+                            StatCard("${collected.size}", "收藏歌单", Modifier.weight(1f))
+                        }
+
+                        // ------------------------------------------- 过滤 Tab
+                        val tabs = listOf("全部 ${list.size}", "我喜欢", "自建 ${own.size}", "收藏 ${collected.size}")
+                        SlidingTabBar(tabs = tabs, selected = filter, onSelect = { filter = it })
+
+                        // ------------------------------------------- 工具栏（新建）
+                        Row(
+                            Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 16.dp, vertical = 6.dp),
+                            horizontalArrangement = Arrangement.End,
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Text3(
+                                text = "＋ 新建歌单",
+                                color = KugouTheme.colors.text,
+                                modifier = Modifier.clickable {
+                                    creating = !creating
+                                    newName = ""
+                                    notice = null
+                                },
+                            )
+                        }
+
+                        // 新建输入行
+                        if (creating) {
                             SaltCard(Modifier.fillMaxWidth().padding(horizontal = 16.dp)) {
-                                system.forEach { pl ->
-                                    CollectionRow(
-                                        coverUrl = pl.coverAt(300),
-                                        title = pl.name,
-                                        subtitle = "${pl.songCount} 首",
-                                        badge = if (pl.isFavorites) "♥" else null,
-                                        onClick = { PageNav.openPlaylist(pl.id, pl.name) },
+                                Row(
+                                    Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 10.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                ) {
+                                    InlineField(
+                                        value = newName,
+                                        placeholder = "歌单名称",
+                                        onValueChange = { newName = it },
+                                        modifier = Modifier.weight(1f),
+                                    )
+                                    Text3(
+                                        text = if (busy) "创建中…" else "确定",
+                                        color = if (busy) KugouTheme.colors.faint else KugouTheme.colors.text,
+                                        modifier = Modifier
+                                            .padding(start = 12.dp)
+                                            .clickable(enabled = !busy && newName.isNotBlank()) {
+                                                busy = true
+                                                val name = newName.trim()
+                                                ApiExec.run(onResult = {
+                                                    busy = false
+                                                    if (it.getOrNull() == null) {
+                                                        notice = if (KugouApi.lastNeedsLogin) "请先登录" else "创建失败"
+                                                    } else {
+                                                        creating = false
+                                                        newName = ""
+                                                        reload++   // 重新拉列表确认
+                                                    }
+                                                }) { PlaylistManage.create(name) }
+                                            },
                                     )
                                 }
                             }
                         }
 
-                        if (own.isNotEmpty()) {
-                            SaltGroupTitle("我的歌单")
-                            SaltCard(Modifier.fillMaxWidth().padding(horizontal = 16.dp)) {
-                                own.forEach { pl ->
-                                    CollectionRow(
-                                        coverUrl = pl.coverAt(300),
-                                        title = pl.name,
-                                        subtitle = "${pl.songCount} 首",
-                                        onClick = { PageNav.openPlaylist(pl.id, pl.name) },
-                                    )
-                                }
-                            }
+                        notice?.let {
+                            Text3(
+                                text = it,
+                                color = KugouTheme.colors.muted,
+                                modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp),
+                            )
                         }
 
-                        if (collected.isNotEmpty()) {
-                            SaltGroupTitle("收藏的歌单")
+                        // ------------------------------------------- 分组网格
+                        val shown: List<Playlist> = when (filter) {
+                            1 -> system
+                            2 -> own
+                            3 -> collected
+                            else -> list
+                        }
+
+                        if (shown.isEmpty()) {
+                            StatusBlock("这里还没有歌单")
+                        } else {
                             SaltCard(Modifier.fillMaxWidth().padding(horizontal = 16.dp)) {
-                                collected.forEach { pl ->
-                                    CollectionRow(
-                                        coverUrl = pl.coverAt(300),
-                                        title = pl.name,
-                                        subtitle = "${pl.songCount} 首",
-                                        onClick = { PageNav.openPlaylist(pl.id, pl.name) },
-                                    )
+                                Column(Modifier.fillMaxWidth().padding(12.dp)) {
+                                    shown.chunked(3).forEach { row ->
+                                        Row(Modifier.fillMaxWidth()) {
+                                            row.forEach { pl ->
+                                                Box(Modifier.weight(1f)) {
+                                                    CoverGridCard(
+                                                        coverUrl = pl.coverAt(300),
+                                                        title = (if (pl.isFavorites) "♥ " else "") + pl.name,
+                                                        subtitle = "${pl.songCount} 首",
+                                                        modifier = Modifier.padding(4.dp),
+                                                    ) { PageNav.openPlaylist(pl.id, pl.name) }
+                                                    // 自建歌单：行尾「…」菜单（删除）
+                                                    if (pl.isOwn && !system.contains(pl)) {
+                                                        Text3(
+                                                            text = "…",
+                                                            color = KugouTheme.colors.muted,
+                                                            modifier = Modifier
+                                                                .align(Alignment.TopEnd)
+                                                                .clickable {
+                                                                    busy = true
+                                                                    ApiExec.run(onResult = { res ->
+                                                                        val ok = res.getOrDefault(false)
+                                                                        busy = false
+                                                                        notice = when {
+                                                                            !ok && KugouApi.lastNeedsLogin -> "请先登录"
+                                                                            !ok -> "删除失败"
+                                                                            else -> "已删除「${pl.name}」"
+                                                                        }
+                                                                        if (ok) {
+                                                                            reload++
+                                                                            // 后台确认真的消失（读缓存延迟）
+                                                                            ApiExec.run(onResult = { g ->
+                                                                                if (!g.getOrDefault(true)) {
+                                                                                    notice = "「${pl.name}」可能仍在服务端，请刷新确认"
+                                                                                }
+                                                                            }) { PlaylistManage.verifyGone(pl.listId) }
+                                                                        }
+                                                                    }) { PlaylistManage.delete(pl.listId) }
+                                                                },
+                                                        )
+                                                    }
+                                                }
+                                            }
+                                            repeat(3 - row.size) { Spacer(Modifier.weight(1f)) }
+                                        }
+                                    }
                                 }
                             }
                         }
@@ -130,6 +257,49 @@ fun PlaylistPage() {
             }
         }
     }
+}
+
+/** 统计卡：大数字 + 小标签（中性底色，不用 accent）。 */
+@Composable
+private fun StatCard(value: String, label: String, modifier: Modifier = Modifier) {
+    androidx.compose.foundation.layout.Box(
+        modifier
+            .background(KugouTheme.colors.subtle, androidx.compose.foundation.shape.RoundedCornerShape(8.dp))
+            .padding(horizontal = 14.dp, vertical = 11.dp),
+    ) {
+        Column {
+            Text3(text = value, color = KugouTheme.colors.text)
+            Text3(text = label, color = KugouTheme.colors.muted, modifier = Modifier.padding(top = 1.dp))
+        }
+    }
+}
+
+/** 行内单行输入框（新建歌单名；失焦/回车不额外处理，由「确定」提交）。 */
+@OptIn(androidx.compose.ui.ExperimentalComposeUiApi::class)
+@Composable
+private fun InlineField(
+    value: String,
+    placeholder: String,
+    onValueChange: (String) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    androidx.compose.foundation.text.BasicTextField(
+        value = value,
+        onValueChange = onValueChange,
+        singleLine = true,
+        textStyle = androidx.compose.ui.text.TextStyle(
+            color = KugouTheme.colors.text,
+            fontSize = 14.sp,
+        ),
+        cursorBrush = androidx.compose.ui.graphics.SolidColor(KugouTheme.colors.accent),
+        modifier = modifier,
+        decorationBox = { inner ->
+            if (value.isEmpty()) {
+                Text3(text = placeholder, color = KugouTheme.colors.faint)
+            }
+            inner()
+        },
+    )
 }
 
 /** 一段状态提示（加载中/失败/空）。 */
