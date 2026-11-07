@@ -34,10 +34,11 @@ import cn.spw.kugou.lite.sidecar.rememberAsyncState
  * 私人 FM / 每日推荐 / 刷歌推荐 / 新歌速递 / 新碟上架。
  * 每个区块独立加载、独立失败，隐藏的区块不发请求。
  *
- * ## 布局（自动适配 + 流式）
+ * ## 布局（自动适配 + 瀑布流）
  *
  * - 列数按页面可用宽度自动适配：每列至少 300dp，1–3 列（规则见 [discoverColumnCount]）
- * - 内容区块按序流入各行；**末行只剩 1 项时独占整行**，不留半行空洞
+ * - 内容区块按「轮转」分进各列，**每列独立往下排**：矮卡片下方立刻排入下一个区块，
+ *   不会出现等高行布局在卡底撑出的空洞（规则见 [discoverFlowColumns]）
  * - 私人 FM 无论几列都独占整行
  *
  * 区块顺序与显示开关由 [DiscoverConfig] 提供，在「编辑」面板里改。
@@ -173,24 +174,30 @@ fun DiscoverPage() {
                     )
                 }
 
-                // ---------------------------------------------- 其余内容区块（流式）
-                // 按自动列数流入各行；末行落单的区块独占整行（见 DiscoverFlow.kt）。
+                // ---------------------------------------------- 其余内容区块（瀑布流）
+                // 按自动列数轮转分列，每列独立往下排；矮卡下方的空洞被下一区块填上。
                 val sections = config.visible.filter { it != "fm" }
-                discoverFlowRows(sections, columns).forEach { row ->
+                val flowColumns = discoverFlowColumns(sections, columns)
+                if (flowColumns.isNotEmpty()) {
                     Row(
                         Modifier.fillMaxWidth().padding(horizontal = 16.dp),
                         horizontalArrangement = Arrangement.spacedBy(10.dp),
                     ) {
-                        row.forEach { item ->
-                            Column(Modifier.weight(item.span.toFloat())) {
-                                SectionContent(
-                                    id = item.id,
-                                    daily = daily.value,
-                                    discover = discover.value,
-                                    newSongs = newSongs.value,
-                                    newAlbums = newAlbums.value,
-                                    onRetry = { reloadTick++ },
-                                )
+                        flowColumns.forEach { column ->
+                            Column(
+                                Modifier.weight(1f),
+                                verticalArrangement = Arrangement.spacedBy(10.dp),
+                            ) {
+                                column.forEach { id ->
+                                    SectionContent(
+                                        id = id,
+                                        daily = daily.value,
+                                        discover = discover.value,
+                                        newSongs = newSongs.value,
+                                        newAlbums = newAlbums.value,
+                                        onRetry = { reloadTick++ },
+                                    )
+                                }
                             }
                         }
                     }

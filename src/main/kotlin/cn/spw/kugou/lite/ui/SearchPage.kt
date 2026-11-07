@@ -179,10 +179,14 @@ internal fun Text3(
     text: String,
     color: Color,
     modifier: Modifier = Modifier,
+    maxLines: Int = Int.MAX_VALUE,
+    overflow: androidx.compose.ui.text.style.TextOverflow = androidx.compose.ui.text.style.TextOverflow.Clip,
 ) {
     androidx.compose.foundation.text.BasicText(
         text = text,
         modifier = modifier,
         style = TextStyle(color = color, fontSize = 14.sp),
+        maxLines = maxLines,
+        overflow = overflow,
     )
 }

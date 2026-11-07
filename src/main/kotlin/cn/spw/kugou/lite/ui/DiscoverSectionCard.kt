@@ -102,6 +102,8 @@ fun AlbumSectionCard(
                                     .takeIf { it >= 0 } ?: index
                                 onPick(allAlbums, i)
                             },
+                        maxLines = 1,
+                        overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
                     )
                 }
             }
@@ -128,7 +130,7 @@ private fun SectionHeader(title: String, onMore: () -> Unit) {
     }
 }
 
-/** 区块内一行紧凑歌曲：44dp 封面 + 歌名 + 歌手。 */
+/** 区块内一行紧凑歌曲：44dp 封面 + 歌名 + 歌手；单行省略对齐 MD3，保证各卡等高。 */
 @Composable
 private fun SectionSongRow(song: Song, onClick: () -> Unit) {
     Row(
@@ -140,11 +142,18 @@ private fun SectionSongRow(song: Song, onClick: () -> Unit) {
     ) {
         CoverBox(song.coverUrl(120), 40, 5)
         Column(Modifier.padding(start = 9.dp).weight(1f)) {
-            Text3(song.title, color = KugouTheme.colors.text)
+            Text3(
+                text = song.title,
+                color = KugouTheme.colors.text,
+                maxLines = 1,
+                overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
+            )
             Text3(
                 text = song.singer,
                 color = KugouTheme.colors.muted,
                 modifier = Modifier.padding(top = 1.dp),
+                maxLines = 1,
+                overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
             )
         }
     }

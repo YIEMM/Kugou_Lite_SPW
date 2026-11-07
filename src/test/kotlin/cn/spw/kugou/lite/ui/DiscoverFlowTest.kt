@@ -5,11 +5,13 @@ import kotlin.test.assertEquals
 import kotlin.test.assertTrue
 
 /**
- * 发现页流式布局的纯逻辑测试：自动列数与流式分行。
+ * 发现页流式布局的纯逻辑测试：自动列数与瀑布流分列。
  *
- * UI 本身无法单测，这里只钉住两条规则：
+ * UI 本身无法单测，这里钉住三条规则：
  * 1. 列数 = 可用宽度 ÷ 每列最小宽度，向下取整，封顶 3、保底 1
- * 2. 分行按列数切块，末行只剩 1 项时独占整行（不留半行空洞）
+ * 2. 分列按「轮转」分配（第 i 个区块进第 i%列数 列）——视觉阅读顺序与配置顺序一致，
+ *    且每列独立往下排，矮卡片下方不会被撑出空洞
+ * 3. 空列丢弃（列数多于区块数时不留占位列）
  */
 class DiscoverFlowTest {
 
@@ -35,42 +37,49 @@ class DiscoverFlowTest {
         assertEquals(3, discoverColumnCount(5000f))
     }
 
-    // ------------------------------------------------------------ discoverFlowRows
+    // ------------------------------------------------------------ discoverFlowColumns
 
     @Test
-    fun `四个区块按两列流式分成两行`() {
-        val rows = discoverFlowRows(listOf("a", "b", "c", "d"), 2)
-        assertEquals(2, rows.size)
-        assertEquals(listOf("a", "b"), rows[0].map { it.id })
-        assertEquals(listOf("c", "d"), rows[1].map { it.id })
-        assertTrue(rows.all { row -> row.all { it.span == 1 } })
+    fun `四个区块按两列轮转分两列`() {
+        val cols = discoverFlowColumns(listOf("a", "b", "c", "d"), 2)
+        assertEquals(listOf(listOf("a", "c"), listOf("b", "d")), cols)
     }
 
     @Test
-    fun `末行落单的区块独占整行`() {
-        val rows = discoverFlowRows(listOf("a", "b", "c"), 2)
-        assertEquals(2, rows.size)
-        assertEquals(1, rows[1].size)
-        assertEquals("c", rows[1][0].id)
-        assertEquals(2, rows[1][0].span)
+    fun `四个区块按三列轮转末项回到第一列`() {
+        val cols = discoverFlowColumns(listOf("a", "b", "c", "d"), 3)
+        assertEquals(listOf(listOf("a", "d"), listOf("b"), listOf("c")), cols)
     }
 
     @Test
-    fun `单个区块也独占整行`() {
-        val rows = discoverFlowRows(listOf("a"), 3)
-        assertEquals(1, rows.size)
-        assertEquals(3, rows[0][0].span)
+    fun `列数多于区块数时空列被丢弃`() {
+        val cols = discoverFlowColumns(listOf("a", "b"), 3)
+        assertEquals(listOf(listOf("a"), listOf("b")), cols)
     }
 
     @Test
-    fun `空区块列表返回空行`() {
-        assertTrue(discoverFlowRows(emptyList(), 2).isEmpty())
+    fun `空区块列表返回空`() {
+        assertTrue(discoverFlowColumns(emptyList(), 2).isEmpty())
     }
 
     @Test
-    fun `列数非法时按单列纵向堆叠`() {
-        val rows = discoverFlowRows(listOf("a", "b"), 0)
-        assertEquals(2, rows.size)
-        assertEquals(1, rows[0][0].span)
+    fun `列数非法时按单列堆叠`() {
+        val cols = discoverFlowColumns(listOf("a", "b"), 0)
+        assertEquals(listOf(listOf("a", "b")), cols)
+    }
+
+    @Test
+    fun `轮转分列保持配置的阅读顺序`() {
+        // 第 i 项永远排在第 i-列数 项之后（同列内），阅读顺序 = 配置顺序
+        val ids = listOf("fm", "daily", "discover", "newSongs", "newAlbums")
+        val cols = discoverFlowColumns(ids, 3)
+        val reading = buildList {
+            var index = 0
+            while (cols.any { it.size > index }) {
+                cols.forEach { col -> if (index < col.size) add(col[index]) }
+                index++
+            }
+        }
+        assertEquals(ids, reading)
     }
 }
