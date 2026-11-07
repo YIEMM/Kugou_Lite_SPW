@@ -58,6 +58,10 @@ object PageNav {
     var detailSectionId: String by mutableStateOf("")
         internal set
 
+    /** 发现页配置变更计数：从编辑面板返回时递增，触发发现页重新读取配置。 */
+    var discoverRefresh: Int by mutableStateOf(0)
+        internal set
+
     /** 二级页返回时回到哪一页。 */
     private var returnTo: KugouLiteTab = KugouLiteTab.Home
 
@@ -129,8 +133,11 @@ object PageNav {
             KugouLiteTab.Home -> return false
             KugouLiteTab.SongList, KugouLiteTab.Artist, KugouLiteTab.Album,
             KugouLiteTab.DiscoverDetail, KugouLiteTab.DiscoverEditor -> {
+                val from = tab
                 tab = returnTo
                 clearDetail()
+                // 从编辑面板回来时，让发现页重新读取（可能改了布局/排序/开关）
+                if (from == KugouLiteTab.DiscoverEditor) discoverRefresh++
                 return true
             }
             else -> {

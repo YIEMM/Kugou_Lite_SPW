@@ -72,31 +72,10 @@ private fun KugouLiteBody() {
     when (PageNav.tab) {
         KugouLiteTab.Home -> DiscoverPage()
 
-        // 任务 6 会填入真正的编辑面板与详情页；这里先给占位以保证
-        // 新增枚举值后 when 仍然穷尽（Kotlin 枚举 when 强制）。
-        KugouLiteTab.DiscoverEditor -> SubPage(
-            title = "编辑发现页",
-            onBack = { PageNav.backHome() },
-        ) {
-            androidx.compose.foundation.text.BasicText(
-                text = "编辑面板（任务 6）",
-                style = androidx.compose.ui.text.TextStyle(
-                    color = KugouTheme.colors.muted,
-                ),
-            )
-        }
+        // 发现页编辑面板与区块详情
+        KugouLiteTab.DiscoverEditor -> DiscoverEditorPage()
 
-        KugouLiteTab.DiscoverDetail -> SubPage(
-            title = PageNav.detailTitle.ifBlank { "发现" },
-            onBack = { PageNav.backHome() },
-        ) {
-            androidx.compose.foundation.text.BasicText(
-                text = "区块详情（任务 6）",
-                style = androidx.compose.ui.text.TextStyle(
-                    color = KugouTheme.colors.muted,
-                ),
-            )
-        }
+        KugouLiteTab.DiscoverDetail -> DiscoverDetailPage()
 
         KugouLiteTab.Search -> SubPage(title = "搜索", onBack = { PageNav.backHome() }) {
             // 搜索页点歌走统一的播放流程（与歌单/榜单/歌手页一致）

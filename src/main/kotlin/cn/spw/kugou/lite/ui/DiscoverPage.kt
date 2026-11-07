@@ -53,7 +53,9 @@ private typealias AlbumBriefState = cn.spw.kugou.lite.sidecar.AlbumBrief
 
 @Composable
 fun DiscoverPage() {
-    var config by remember { mutableStateOf(DiscoverConfig.load()) }
+    // 每次从编辑面板返回（discoverRefresh 递增）都重新读配置，
+    // 这样布局/排序/开关立刻生效，且不必重发网络请求。
+    var config by remember(PageNav.discoverRefresh) { mutableStateOf(DiscoverConfig.load()) }
     var fmStation by remember { mutableStateOf(config.fmStationIndex) }
     var reloadTick by remember { mutableStateOf(0) }
 
