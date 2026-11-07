@@ -51,6 +51,16 @@ object KugouApi {
     var lastNeedsLogin: Boolean = false
         private set
 
+    /**
+     * 供兄弟 API 对象（SearchApi/SquareApi/…）在**未登录短路**时统一标记。
+     * 只在「本该登录却没登录、连请求都没发」的场景使用；
+     * 网络层自身的登录失效判定走 [get] 内部（20017/20018/20028）。
+     */
+    internal fun markNeedsLogin() {
+        lastNeedsLogin = true
+        lastError = "登录已失效，请重新扫码登录"
+    }
+
     @Volatile
     var lastError: String? = null
         private set
