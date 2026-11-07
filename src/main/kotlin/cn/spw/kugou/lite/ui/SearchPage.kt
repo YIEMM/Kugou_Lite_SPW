@@ -5,14 +5,17 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -32,7 +35,10 @@ import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.input.key.type
 import cn.spw.kugou.lite.sidecar.ApiExec
 import cn.spw.kugou.lite.sidecar.Async
+import cn.spw.kugou.lite.sidecar.AlbumBrief
 import cn.spw.kugou.lite.sidecar.KugouApi
+import cn.spw.kugou.lite.sidecar.Playlist
+import cn.spw.kugou.lite.sidecar.SearchApi
 import cn.spw.kugou.lite.sidecar.SearchResult
 import cn.spw.kugou.lite.sidecar.Song
 import cn.spw.kugou.lite.sidecar.rememberAsyncState
@@ -53,47 +59,197 @@ import cn.spw.kugou.lite.sidecar.rememberAsyncState
  * 只在用户按「搜索」或回车时发请求。一边打字一边请求会打爆第三方接口
  * （它有 2 分钟缓存和频率限制），也会让 UI 抖动。
  */
+/**
+ * 搜索页 —— 2026-11 改版：热搜词 + 输入建议 + 综合 Tab。
+ *
+ * ## 三态
+ *
+ * 1. **空态**（未提交检索词）：搜索框 + 热搜词 chips（`/search/hot`），
+ *    输入中显示建议列表（`/search/suggest`，300ms 防抖，点建议即检索）
+ * 2. **结果态**（回车或点热搜/建议）：`SlidingTabBar` 四个 Tab
+ *    （单曲/歌手/专辑/歌单），**懒加载**——首次切入才发对应请求；
+ *    计数来自各端点 total（`/search/complex` 实测不可用，裁决 R2）
+ * 3. 各 Tab 内容：单曲 `DataTableRow`、歌手/专辑/歌单 `CoverGridCard` 网格
+ *
+ * ## 回车提交保留
+ *
+ * `SearchBox` 的 `onPreviewKeyEvent` 回车拦截不变；只提交不实时搜索，
+ * 建议是唯一跟随输入的请求（防抖 + 轻量）。
+ */
 @Composable
 fun SearchPage(onPick: (Song, List<Song>, Int) -> Unit) {
     var keyword by remember { mutableStateOf("") }
-    val state = rememberAsyncState<SearchResult?>()
+    var submitted by remember { mutableStateOf("") }
+    var selectedTab by remember { mutableStateOf(0) }
+
+    val songState = rememberAsyncState<SearchResult?>()
+    val artistState = rememberAsyncState<List<cn.spw.kugou.lite.sidecar.Artist>>()
+    val albumState = rememberAsyncState<SearchApi.SearchPage<AlbumBrief>?>()
+    val specialState = rememberAsyncState<SearchApi.SearchPage<Playlist>?>()
+    val hotState = rememberAsyncState<List<String>>()
+    val suggestState = rememberAsyncState<List<String>>()
+
+    // 热搜词：进页面拉一次
+    LaunchedEffect(Unit) { hotState.load { SearchApi.hotWords() } }
+    // 输入建议：300ms 防抖；已提交的同词不再拉建议
+    LaunchedEffect(keyword) {
+        kotlinx.coroutines.delay(300)
+        if (keyword.isNotBlank() && keyword != submitted) {
+            suggestState.load { SearchApi.suggest(keyword) }
+        }
+    }
+    // 懒加载：切到某 Tab 才发该 Tab 的请求；单曲 Tab 在提交时立即加载
+    LaunchedEffect(submitted, selectedTab) {
+        if (submitted.isBlank()) return@LaunchedEffect
+        when (selectedTab) {
+            0 -> if (songState.value == null && songState.value !is Async.Success) {
+                songState.load { KugouApi.search(submitted) }
+            }
+            1 -> if (artistState.value == null) artistState.load { SearchApi.searchArtists(submitted) }
+            2 -> if (albumState.value == null) albumState.load { SearchApi.searchAlbums(submitted) }
+            3 -> if (specialState.value == null) specialState.load { SearchApi.searchSpecial(submitted) }
+        }
+    }
+
+    val showResults = submitted.isNotBlank()
+    val suggestLoaded = (suggestState.value as? Async.Success)?.value
+    val showSuggest = !showResults && keyword.isNotBlank() && !suggestLoaded.isNullOrEmpty()
+    val showHot = !showResults && !showSuggest
 
     Column(Modifier.fillMaxWidth().padding(bottom = 16.dp)) {
-        SaltGroupTitle("搜索酷狗")
         SaltCard(Modifier.fillMaxWidth().padding(horizontal = 16.dp)) {
             Column(Modifier.fillMaxWidth().padding(16.dp)) {
                 SearchBox(
                     value = keyword,
                     onValueChange = { keyword = it },
-                    onSubmit = { if (keyword.isNotBlank()) state.load { KugouApi.search(keyword) } },
-                )
-                SaltText(
-                    "输入歌名或歌手后回车",
-                    modifier = Modifier.padding(top = 8.dp),
+                    onSubmit = {
+                        if (keyword.isNotBlank()) {
+                            submitted = keyword
+                            selectedTab = 0
+                            songState.reset()
+                            artistState.reset()
+                            albumState.reset()
+                            specialState.reset()
+                        }
+                    },
                 )
             }
         }
 
-        when (val s = state.value) {
-            is Async.Idle -> Unit
-            is Async.Loading -> StatusCard("正在搜索…")
-            is Async.Failure -> StatusCard("搜索失败：${s.message}")
-            is Async.Success -> {
-                val result = s.value
-                if (result == null) {
-                    StatusCard(
-                        if (KugouApi.lastNeedsLogin) "需要先登录酷狗账号（「账户」页扫码）"
-                        else "搜索失败：${KugouApi.lastError ?: "未知错误"}"
-                    )
-                } else if (result.songs.isEmpty()) {
-                    StatusCard("没有找到「$keyword」相关的歌曲")
-                } else {
+        when {
+            // -------------------------------------------------- 空态：热搜 + 建议
+            showHot -> {
+                when (val h = hotState.value) {
+                    is Async.Success -> if (h.value.isNotEmpty()) {
+                        SaltGroupTitle("热搜")
+                        SaltCard(Modifier.fillMaxWidth().padding(horizontal = 16.dp)) {
+                            Column(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 10.dp)) {
+                                androidx.compose.foundation.layout.FlowRow {
+                                    h.value.take(20).forEach { word ->
+                                        HotChip(word) {
+                                            keyword = word
+                                            submitted = word
+                                            selectedTab = 0
+                                            songState.reset(); artistState.reset(); albumState.reset(); specialState.reset()
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    else -> Unit // 热搜拉取中/失败不占位
+                }
+            }
+
+            // -------------------------------------------------- 输入中：建议
+            showSuggest -> {
+                val list = (suggestState.value as Async.Success).value
+                SaltCard(Modifier.fillMaxWidth().padding(horizontal = 16.dp)) {
+                    Column(Modifier.fillMaxWidth().padding(vertical = 4.dp)) {
+                        list.take(10).forEach { hint ->
+                            Row(
+                                Modifier
+                                    .fillMaxWidth()
+                                    .clickable {
+                                        keyword = hint
+                                        submitted = hint
+                                        selectedTab = 0
+                                        songState.reset(); artistState.reset(); albumState.reset(); specialState.reset()
+                                    }
+                                    .padding(horizontal = 16.dp, vertical = 9.dp),
+                            ) {
+                                Text3("⌕", color = KugouTheme.colors.faint)
+                                Text3(
+                                    text = hint,
+                                    color = KugouTheme.colors.text,
+                                    modifier = Modifier.padding(start = 10.dp),
+                                    maxLines = 1,
+                                    overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+
+            // -------------------------------------------------- 结果态：综合 Tab
+            showResults -> {
+                val songTotal = (songState.value as? Async.Success)?.value?.total?.takeIf { it > 0 }
+                val artistTotal = (artistState.value as? Async.Success)?.value?.size?.takeIf { it > 0 }
+                val albumTotal = (albumState.value as? Async.Success)?.value?.total?.takeIf { it > 0 }
+                val specialTotal = (specialState.value as? Async.Success)?.value?.total?.takeIf { it > 0 }
+                val tabs = listOf(
+                    "单曲" + (songTotal?.let { " $it" } ?: ""),
+                    "歌手" + (artistTotal?.let { " $it" } ?: ""),
+                    "专辑" + (albumTotal?.let { " $it" } ?: ""),
+                    "歌单" + (specialTotal?.let { " $it" } ?: ""),
+                )
+                SlidingTabBar(tabs = tabs, selected = selectedTab, onSelect = { selectedTab = it })
+
+                when (selectedTab) {
+                    0 -> SongResultList(submitted, songState.value, onPick)
+                    1 -> ArtistGrid(artistState.value)
+                    2 -> AlbumGrid(albumState.value)
+                    3 -> SpecialGrid(specialState.value)
+                }
+            }
+        }
+    }
+}
+
+/** 搜索结果·单曲：DataTableRow 列表，行点击进播放队列。 */
+@Composable
+private fun SongResultList(
+    query: String,
+    state: Async<SearchResult?>,
+    onPick: (Song, List<Song>, Int) -> Unit,
+) {
+    when (val s = state) {
+        is Async.Idle, is Async.Loading -> StatusCard("正在搜索…")
+        is Async.Failure -> StatusCard("搜索失败：${s.message}")
+        is Async.Success -> {
+            val result = s.value
+            when {
+                result == null -> StatusCard(
+                    if (KugouApi.lastNeedsLogin) "需要先登录酷狗账号（设置 → 扫码登录）"
+                    else "搜索失败：${KugouApi.lastError ?: "未知错误"}",
+                )
+                result.songs.isEmpty() -> StatusCard("没有找到「$query」相关的歌曲")
+                else -> {
                     SaltGroupTitle("找到 ${result.total} 首")
                     SaltCard(Modifier.fillMaxWidth().padding(horizontal = 16.dp)) {
-                        LazyColumn(Modifier.fillMaxWidth().height(360.dp)) {
-                            items(result.songs.size) { index ->
-                                val song = result.songs[index]
-                                SongRow(song = song, onClick = { onPick(song, result.songs, index) })
+                        Column(Modifier.fillMaxWidth().padding(vertical = 4.dp)) {
+                            result.songs.forEachIndexed { index, song ->
+                                DataTableRow(
+                                    index = "%02d".format(index + 1),
+                                    coverUrl = song.coverUrl(120),
+                                    title = song.title,
+                                    subtitle = song.singer,
+                                    album = song.albumName,
+                                    duration = song.durationText,
+                                    showAlbum = true,
+                                    onRowClick = { onPick(song, result.songs, index) },
+                                )
                             }
                         }
                     }
@@ -101,6 +257,129 @@ fun SearchPage(onPick: (Song, List<Song>, Int) -> Unit) {
             }
         }
     }
+}
+
+/** 搜索结果·歌手网格（实测无头像 → 占位音符封面）。 */
+@Composable
+private fun ArtistGrid(state: Async<List<cn.spw.kugou.lite.sidecar.Artist>>) {
+    when (val s = state) {
+        is Async.Idle, is Async.Loading -> StatusCard("正在搜索…")
+        is Async.Failure -> StatusCard("搜索失败：${s.message}")
+        is Async.Success -> {
+            val artists = s.value
+            if (artists.isEmpty()) {
+                StatusCard("没有找到相关歌手")
+            } else {
+                SaltGroupTitle("歌手")
+                SaltCard(Modifier.fillMaxWidth().padding(horizontal = 16.dp)) {
+                    Column(Modifier.fillMaxWidth().padding(12.dp)) {
+                        artists.chunked(3).forEach { row ->
+                            Row(Modifier.fillMaxWidth()) {
+                                row.forEach { artist ->
+                                    CoverGridCard(
+                                        coverUrl = null,
+                                        title = artist.name,
+                                        subtitle = "歌手",
+                                        modifier = Modifier.weight(1f).padding(4.dp),
+                                    ) { PageNav.openArtist(artist.id, artist.name) }
+                                }
+                                repeat(3 - row.size) { Spacer(Modifier.weight(1f)) }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/** 搜索结果·专辑网格。 */
+@Composable
+private fun AlbumGrid(state: Async<SearchApi.SearchPage<AlbumBrief>?>) {
+    when (val s = state) {
+        is Async.Idle, is Async.Loading -> StatusCard("正在搜索…")
+        is Async.Failure -> StatusCard("搜索失败：${s.message}")
+        is Async.Success -> {
+            val page = s.value
+            if (page == null || page.items.isEmpty()) {
+                StatusCard("没有找到相关专辑")
+            } else {
+                SaltGroupTitle("专辑")
+                SaltCard(Modifier.fillMaxWidth().padding(horizontal = 16.dp)) {
+                    Column(Modifier.fillMaxWidth().padding(12.dp)) {
+                        page.items.chunked(3).forEach { row ->
+                            Row(Modifier.fillMaxWidth()) {
+                                row.forEach { album ->
+                                    CoverGridCard(
+                                        coverUrl = album.coverAt(300),
+                                        title = album.name,
+                                        subtitle = album.artist,
+                                        modifier = Modifier.weight(1f).padding(4.dp),
+                                    ) { PageNav.openAlbum(album.id, album.name) }
+                                }
+                                repeat(3 - row.size) { Spacer(Modifier.weight(1f)) }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/** 搜索结果·歌单网格（点进统一详情页，gid）。 */
+@Composable
+private fun SpecialGrid(state: Async<SearchApi.SearchPage<Playlist>?>) {
+    when (val s = state) {
+        is Async.Idle, is Async.Loading -> StatusCard("正在搜索…")
+        is Async.Failure -> StatusCard("搜索失败：${s.message}")
+        is Async.Success -> {
+            val page = s.value
+            if (page == null || page.items.isEmpty()) {
+                StatusCard(
+                    if (KugouApi.lastNeedsLogin) "需要先登录酷狗账号"
+                    else "没有找到相关歌单",
+                )
+            } else {
+                SaltGroupTitle("歌单")
+                SaltCard(Modifier.fillMaxWidth().padding(horizontal = 16.dp)) {
+                    Column(Modifier.fillMaxWidth().padding(12.dp)) {
+                        page.items.chunked(3).forEach { row ->
+                            Row(Modifier.fillMaxWidth()) {
+                                row.forEach { pl ->
+                                    CoverGridCard(
+                                        coverUrl = pl.coverAt(300),
+                                        title = pl.name,
+                                        subtitle = "${pl.songCount} 首",
+                                        modifier = Modifier.weight(1f).padding(4.dp),
+                                    ) { PageNav.openPlaylist(pl.id, pl.name) }
+                                }
+                                repeat(3 - row.size) { Spacer(Modifier.weight(1f)) }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/** 热搜词 chip（选中态用 subtle，不用 accent —— 反目标约束）。 */
+@Composable
+private fun HotChip(word: String, onClick: () -> Unit) {
+    Text3(
+        text = word,
+        color = KugouTheme.colors.text,
+        modifier = Modifier
+            .padding(end = 8.dp, bottom = 8.dp)
+            .background(
+                KugouTheme.colors.subtle,
+                RoundedCornerShape(999.dp),
+            )
+            .clickable { onClick() }
+            .padding(horizontal = 12.dp, vertical = 5.dp),
+        maxLines = 1,
+    )
 }
 
 /**

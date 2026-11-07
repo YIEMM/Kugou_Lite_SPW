@@ -4,6 +4,8 @@ import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.aspectRatio
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.RowScope
@@ -14,6 +16,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.background
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -303,3 +306,67 @@ internal fun EntryTile(
         )
     }
 }
+
+/**
+ * 封面网格卡：填满单元格宽度的方形封面 + 标题 + 副标题。
+ *
+ * 与 [CoverBox] 的区别：封面宽度跟随单元格（`fillMaxWidth().aspectRatio(1f)`），
+ * 加载中/失败显示音符占位。供搜索页/歌单广场/我的音乐等封面网格共用。
+ */
+@OptIn(androidx.compose.ui.ExperimentalComposeUiApi::class)
+@Composable
+internal fun CoverGridCard(
+    coverUrl: String?,
+    title: String,
+    subtitle: String,
+    modifier: Modifier = Modifier,
+    onClick: () -> Unit = {},
+) {
+    val c = KugouTheme.colors
+    var hovered by remember { mutableStateOf(false) }
+    val bitmap = rememberCover(coverUrl?.replace("{size}", "300"))
+    Column(
+        modifier
+            .clip(RoundedCornerShape(8.dp))
+            .drawBehind { if (hovered) drawRect(c.hover) }
+            .clickable { onClick() }
+            .onPointerEvent(PointerEventType.Enter) { hovered = true }
+            .onPointerEvent(PointerEventType.Exit) { hovered = false }
+            .padding(9.dp),
+    ) {
+        val shape = RoundedCornerShape(6.dp)
+        androidx.compose.foundation.layout.Box(
+            Modifier
+                .fillMaxWidth()
+                .aspectRatio(1f)
+                .background(c.coverPlaceholder, shape),
+            contentAlignment = Alignment.Center,
+        ) {
+            if (bitmap != null) {
+                androidx.compose.foundation.Image(
+                    bitmap = bitmap,
+                    contentDescription = null,
+                    contentScale = androidx.compose.ui.layout.ContentScale.Crop,
+                    modifier = Modifier.fillMaxWidth().aspectRatio(1f).clip(shape),
+                )
+            } else {
+                Text3(text = "♪", color = c.faint)
+            }
+        }
+        Text3(
+            text = title,
+            color = c.text,
+            modifier = Modifier.padding(top = 7.dp),
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+        )
+        Text3(
+            text = subtitle,
+            color = c.muted,
+            modifier = Modifier.padding(top = 1.dp),
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+        )
+    }
+}
+
