@@ -82,7 +82,7 @@ fun AlbumPage() {
         SaltGroupTitle("曲目")
 
         SaltCard(Modifier.fillMaxWidth().padding(horizontal = 16.dp)) {
-            Column(Modifier.fillMaxWidth().padding(vertical = 8.dp)) {
+            Column(Modifier.fillMaxWidth().padding(vertical = 4.dp)) {
                 when (val s = songsState.value) {
                     is Async.Idle, is Async.Loading -> ListRow("正在加载…", "")
                     is Async.Failure -> ListRow("加载失败：${s.message}", "")
@@ -95,12 +95,17 @@ fun AlbumPage() {
                                 "",
                             )
                             list.isEmpty() -> ListRow("该专辑暂无曲目", "")
-                            // 用序号 + 歌名，方便对照专辑曲序
+                            // 统一骨架：曲序 + 封面 + 歌名歌手 + 时长（专辑页不重复显示专辑列）
                             else -> list.forEachIndexed { index, song ->
-                                AlbumTrackRow(
-                                    index = index + 1,
-                                    song = song,
-                                    onClick = { playSongsFromQueue(list, index) },
+                                DataTableRow(
+                                    index = (index + 1).toString().padStart(2, '0'),
+                                    coverUrl = song.coverUrl(120),
+                                    title = song.title,
+                                    subtitle = song.singer,
+                                    album = null,
+                                    duration = song.durationText,
+                                    showAlbum = false,
+                                    onRowClick = { playSongsFromQueue(list, index) },
                                 )
                             }
                         }

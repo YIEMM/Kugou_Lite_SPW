@@ -35,6 +35,7 @@ import cn.spw.kugou.lite.host.PlaybackBridge
 import cn.spw.kugou.lite.sidecar.ApiExec
 import cn.spw.kugou.lite.sidecar.Async
 import cn.spw.kugou.lite.sidecar.AudioCache
+import cn.spw.kugou.lite.sidecar.ExploreApi
 import cn.spw.kugou.lite.sidecar.Id3CoverWriter
 import cn.spw.kugou.lite.sidecar.KugouApi
 import cn.spw.kugou.lite.sidecar.MutableAsyncState
@@ -315,7 +316,7 @@ private fun StatusBlock(text: String) {
     }
 }
 
-/** 排行榜列表。每一项可点进歌曲列表。 */
+/** 排行榜列表（封面网格，点卡片进统一详情页）。 */
 @Composable
 fun RankPage() {
     val state = rememberAsyncState<List<Rank>?>()
@@ -334,15 +335,21 @@ fun RankPage() {
                     )
                     list.isEmpty() -> StatusBlock("暂无榜单")
                     else -> {
-                        SaltGroupTitle("排行榜")
                         SaltCard(Modifier.fillMaxWidth().padding(horizontal = 16.dp)) {
-                            list.forEach { r ->
-                                CollectionRow(
-                                    coverUrl = r.coverUrl,
-                                    title = r.name,
-                                    subtitle = if (r.songCount > 0) "${r.songCount} 首" else "点击查看",
-                                    onClick = { PageNav.openRank(r.id, r.name) },
-                                )
+                            Column(Modifier.fillMaxWidth().padding(12.dp)) {
+                                list.chunked(3).forEach { row ->
+                                    Row(Modifier.fillMaxWidth()) {
+                                        row.forEach { r ->
+                                            CoverGridCard(
+                                                coverUrl = r.coverUrl?.replace("{size}", "300"),
+                                                title = r.name,
+                                                subtitle = if (r.songCount > 0) "${r.songCount} 首" else "榜单",
+                                                modifier = Modifier.weight(1f).padding(4.dp),
+                                            ) { PageNav.openRank(r.id, r.name) }
+                                        }
+                                        repeat(3 - row.size) { Spacer(Modifier.weight(1f)) }
+                                    }
+                                }
                             }
                         }
                     }
@@ -352,20 +359,134 @@ fun RankPage() {
     }
 }
 
-/** 每日推荐。直接是歌曲列表，点歌即试听。 */
+/**
+ * 每日推荐：今日 / 风格推荐 / 历史 三个 Tab。
+ *
+ * - **今日**：`/everyday/recommend`（现有 `KugouApi.dailyRecommend`）
+ * - **风格推荐**：`/everyday/style/recommend?tagid=`，tagid 用实测可用的
+ *   `S14`（华语流行）等；首版把「风格」做成 chips 供切换
+ * - **历史**：`/everyday/history` → 按日期分组，选中某天再展示曲目表格
+ */
 @Composable
 fun DailyPage() {
-    val state = rememberAsyncState<List<Song>?>()
-    LaunchedEffect(Unit) { state.load { KugouApi.dailyRecommend() } }
+    val today = rememberAsyncState<List<Song>?>()
+    val style = rememberAsyncState<List<Song>>()
+    val history = rememberAsyncState<List<ExploreApi.EverydayDay>>()
+    var tab by remember { mutableStateOf(0) }
+    var styleTag by remember { mutableStateOf("S14") }
+    var pickedDay by remember { mutableStateOf<ExploreApi.EverydayDay?>(null) }
 
-    ListScaffold(
-        state = state,
-        groupTitle = "每日推荐",
-        emptyText = "今日暂无推荐",
-        loginHint = "需要登录酷狗账号",
-    ) { list ->
-        list.forEachIndexed { index, s ->
-            SongRow(song = s, onClick = { onSongPicked(list, index) })
+    LaunchedEffect(Unit) { today.load { KugouApi.dailyRecommend() } }
+    LaunchedEffect(styleTag) { style.load { ExploreApi.styleRecommend(styleTag) } }
+    LaunchedEffect(Unit) { history.load { ExploreApi.everydayHistory() } }
+
+    Column(Modifier.fillMaxWidth().padding(bottom = 16.dp)) {
+        SlidingTabBar(
+            tabs = listOf("今日", "风格推荐", "历史"),
+            selected = tab,
+            onSelect = { tab = it },
+        )
+
+        when (tab) {
+            0 -> SongTableState(today.value, "今日暂无推荐")
+            1 -> {
+                // 风格 chips（实测 S14=华语流行；其余 tagid 真机可再扩）
+                val styles = listOf("S14" to "华语流行", "S13" to "欧美", "S15" to "日语", "S16" to "韩语")
+                Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp)) {
+                    androidx.compose.foundation.layout.FlowRow {
+                        styles.forEach { (id, label) ->
+                            Text3(
+                                text = label,
+                                color = if (id == styleTag) KugouTheme.colors.text else KugouTheme.colors.muted,
+                                modifier = Modifier
+                                    .padding(end = 8.dp, bottom = 8.dp)
+                                    .background(
+                                        if (id == styleTag) KugouTheme.colors.selectedBackground else KugouTheme.colors.subtle,
+                                        androidx.compose.foundation.shape.RoundedCornerShape(999.dp),
+                                    )
+                                    .clickable { styleTag = id }
+                                    .padding(horizontal = 12.dp, vertical = 5.dp),
+                            )
+                        }
+                    }
+                }
+                SongTableState(style.value, "该风格暂无推荐")
+            }
+            else -> {
+                val days = (history.value as? Async.Success)?.value.orEmpty()
+                val day = pickedDay
+                if (day == null) {
+                    if (days.isEmpty()) {
+                        StatusBlock("暂无推荐历史")
+                    } else {
+                        SaltGroupTitle("推荐历史")
+                        SaltCard(Modifier.fillMaxWidth().padding(horizontal = 16.dp)) {
+                            days.forEach { d ->
+                                CollectionRow(
+                                    coverUrl = d.songs.firstOrNull()?.coverUrl(240),
+                                    title = d.title,
+                                    subtitle = "${d.songs.size} 首",
+                                    onClick = { pickedDay = d },
+                                )
+                            }
+                        }
+                    }
+                } else {
+                    Row(
+                        Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 16.dp, vertical = 6.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Text3(
+                            text = "‹ 返回日期",
+                            color = KugouTheme.colors.text,
+                            modifier = Modifier.clickable { pickedDay = null },
+                        )
+                        Text3(
+                            text = day.title,
+                            color = KugouTheme.colors.muted,
+                            modifier = Modifier.padding(start = 12.dp),
+                            maxLines = 1,
+                        )
+                    }
+                    SongTableState(Async.Success(day.songs), "该日无曲目")
+                }
+            }
+        }
+    }
+}
+
+/** 歌曲表格状态渲染（Daily 页内部复用）。 */
+@Composable
+private fun SongTableState(state: Async<List<Song>?>, emptyText: String) {
+    when (val s = state) {
+        is Async.Idle, is Async.Loading -> StatusBlock("正在加载…")
+        is Async.Failure -> StatusBlock("加载失败：${s.message}")
+        is Async.Success -> {
+            val list = s.value
+            when {
+                list == null -> StatusBlock(
+                    if (KugouApi.lastNeedsLogin) "需要登录酷狗账号"
+                    else "加载失败：${KugouApi.lastError ?: "未知错误"}",
+                )
+                list.isEmpty() -> StatusBlock(emptyText)
+                else -> SaltCard(Modifier.fillMaxWidth().padding(horizontal = 16.dp)) {
+                    Column(Modifier.fillMaxWidth().padding(vertical = 4.dp)) {
+                        list.forEachIndexed { i, song ->
+                            DataTableRow(
+                                index = "%02d".format(i + 1),
+                                coverUrl = song.coverUrl(120),
+                                title = song.title,
+                                subtitle = song.singer,
+                                album = song.albumName,
+                                duration = song.durationText,
+                                onRowClick = { playSongsFromQueue(list, i) },
+                            )
+                        }
+                    }
+                }
+            }
         }
     }
 }
