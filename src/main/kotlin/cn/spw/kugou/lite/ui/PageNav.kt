@@ -163,6 +163,21 @@ object PageNav {
         pushDetail(Frame(KugouLiteTab.DiscoverDetail, title = title, sectionId = sectionId, detailType = "discover"))
     }
 
+    /** 打开每日推荐（顶层页）。 */
+    fun openDaily() {
+        go(KugouLiteTab.Daily)
+    }
+
+    /** 打开歌单广场。 */
+    fun openSquare() {
+        go(KugouLiteTab.Square)
+    }
+
+    /** 打开播放历史。 */
+    fun openHistory() {
+        go(KugouLiteTab.History)
+    }
+
     /** 打开发现页编辑面板。 */
     fun openDiscoverEditor() {
         pushDetail(Frame(KugouLiteTab.DiscoverEditor))

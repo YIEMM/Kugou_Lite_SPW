@@ -370,34 +370,6 @@ fun DailyPage() {
     }
 }
 
-/** 歌单详情 / 榜单详情的歌曲列表。 */
-@Composable
-fun SongListPage() {
-    val rankId = PageNav.detailRankId
-    val playlistId = PageNav.detailPlaylistId
-    val state = rememberAsyncState<List<Song>?>()
-
-    LaunchedEffect(rankId, playlistId) {
-        state.load {
-            when {
-                rankId.isNotBlank() -> KugouApi.rankSongs(rankId)
-                playlistId.isNotBlank() -> KugouApi.playlistSongs(playlistId)
-                else -> emptyList()
-            }
-        }
-    }
-
-    ListScaffold(
-        state = state,
-        groupTitle = PageNav.detailTitle.ifBlank { "歌曲列表" },
-        emptyText = "该列表暂无歌曲",
-        loginHint = "需要登录酷狗账号",
-    ) { list ->
-        list.forEachIndexed { index, s ->
-            SongRow(song = s, onClick = { onSongPicked(list, index) })
-        }
-    }
-}
 
 /**
  * 通用的「从列表点歌」流程，供所有页面共用。

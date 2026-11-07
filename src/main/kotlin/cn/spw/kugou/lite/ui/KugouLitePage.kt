@@ -72,17 +72,15 @@ private fun KugouLiteBody() {
     when (PageNav.tab) {
         KugouLiteTab.Home -> DiscoverPage()
 
-        // 发现页编辑面板与区块详情
+        // 发现页编辑面板
         KugouLiteTab.DiscoverEditor -> DiscoverEditorPage()
-
-        KugouLiteTab.DiscoverDetail -> DiscoverDetailPage()
 
         KugouLiteTab.Search -> SubPage(title = "搜索", onBack = { PageNav.backHome() }) {
             // 搜索页点歌走统一的播放流程（与歌单/榜单/歌手页一致）
             SearchPage(onPick = { _, queue, index -> playSongsFromQueue(queue, index) })
         }
 
-        KugouLiteTab.Playlists -> SubPage(title = "我的歌单", onBack = { PageNav.backHome() }) {
+        KugouLiteTab.Playlists -> SubPage(title = "我的音乐", onBack = { PageNav.backHome() }) {
             PlaylistPage()
         }
 
@@ -94,13 +92,10 @@ private fun KugouLiteBody() {
             DailyPage()
         }
 
-        // 歌单详情 / 榜单详情共用同一个歌曲列表页，标题由 PageNav 决定。
-        KugouLiteTab.SongList -> SubPage(
-            title = PageNav.detailTitle.ifBlank { "歌曲列表" },
-            onBack = { PageNav.backHome() },
-        ) {
-            SongListPage()
-        }
+        // 统一详情页：歌单/榜单/广场/每日推荐/发现区块/专辑 共用
+        KugouLiteTab.SongList -> DetailPage()
+
+        KugouLiteTab.DiscoverDetail -> DetailPage()
 
         KugouLiteTab.Login -> SubPage(title = "登录", onBack = { PageNav.backHome() }) {
             LoginPage()
