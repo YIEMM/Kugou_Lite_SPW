@@ -96,6 +96,16 @@ data class Song(
      * 所以为 0 表示「这首歌不是从歌单里读出来的」。
      */
     val fileId: Long = 0L,
+    /**
+     * 私人 FM 的推荐游标（`cur_mark`）。
+     *
+     * `/personal/fm` 在 `data.cur_mark` 里回传一个不透明令牌，下一轮请求
+     * **原样带上**才能续上同一条推荐流；不带会从头开始推、出现重复曲目。
+     *
+     * 只有 FM 接口返回的歌曲会填它，其它接口一律为空串。
+     * 放在构造参数末尾且带默认值，避免破坏已有的 [Song] 构造调用。
+     */
+    val curMark: String = "",
 ) {
     /**
      * 时长格式化为 `m:ss`。
@@ -284,4 +294,29 @@ data class ArtistRef(
 ) {
     /** 有 id 才能进歌手页。 */
     val clickable: Boolean get() = id.isNotBlank()
+}
+
+/**
+ * 发现页「新碟上架」区块里的专辑。
+ *
+ * ## 为什么和 [Album] 分开
+ *
+ * `/top/album` 每项只有 `albumid` / `albumname` / `singername` / `imgurl`
+ * 四个字段，没有 [Album] 那套 `publish_date` / `type` / `song_count`。
+ * 发现页只用来展示封面横排（点进去再调 `/album/detail` 取详情），
+ * 所以单独用一个最小模型，避免到处构造半空的 [Album]。
+ *
+ * [coverUrl] **保留 `{size}` 占位**（`http://x/{size}/a.jpg`）：
+ * 首屏小封面与详情页大封面像素不同，交给调用方按需替换。
+ */
+data class AlbumBrief(
+    val id: String,
+    val name: String,
+    val artist: String,
+    /** 封面模板，通常含 `{size}` 占位；接口没给时为 null。 */
+    val coverUrl: String?,
+) {
+    /** 取指定尺寸的封面地址（替换 `{size}` 占位）。 */
+    fun coverAt(px: Int = 240): String? =
+        coverUrl?.replace("{size}", px.toString())?.takeIf { it.startsWith("http") }
 }

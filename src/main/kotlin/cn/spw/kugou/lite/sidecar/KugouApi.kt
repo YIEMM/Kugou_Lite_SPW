@@ -962,6 +962,20 @@ object KugouApi {
     private fun firstLong(obj: Map<String, Any?>, vararg keys: String): Long =
         keys.firstNotNullOfOrNull { k -> obj[k]?.let { JsonLite.asLong(it) } } ?: 0L
 
+    /**
+     * 供同包内的其它 API 单元（如 [DiscoverApi]）复用的 GET 入口。
+     *
+     * [get] 是 private 的：它承担了登录态注入、`20028/20017/20018`
+     * 的「需要登录」判定、超时与异常兜底这一整套策略，不能复制第二份
+     * —— 复制出去后任何一处修了另一处就漏。所以只开一个 internal 的
+     * 薄壳，把同一套行为借出去。
+     *
+     * @return 解析后的 JSON 树（结构见 [JsonLite]）；失败返回 null，
+     *         失败原因写在 [lastError] / [lastNeedsLogin]
+     */
+    internal fun getRaw(path: String, params: Map<String, String> = emptyMap()): Any? =
+        get(path, params)
+
     private fun get(path: String, params: Map<String, String>): Any? {
         val http = SidecarManager.baseUrl
         if (http == null) {

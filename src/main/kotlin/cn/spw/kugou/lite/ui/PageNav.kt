@@ -54,6 +54,14 @@ object PageNav {
     var detailPlaylistId: String by mutableStateOf("")
         internal set
 
+    /** 发现页区块详情页的区块 id（空表示不是区块详情）。 */
+    var detailSectionId: String by mutableStateOf("")
+        internal set
+
+    /** 发现页配置变更计数：从编辑面板返回时递增，触发发现页重新读取配置。 */
+    var discoverRefresh: Int by mutableStateOf(0)
+        internal set
+
     /** 二级页返回时回到哪一页。 */
     private var returnTo: KugouLiteTab = KugouLiteTab.Home
 
@@ -101,6 +109,20 @@ object PageNav {
         tab = KugouLiteTab.Album
     }
 
+    /** 打开发现页某个区块的详情页（完整列表）。 */
+    fun openDiscoverDetail(sectionId: String, title: String) {
+        detailSectionId = sectionId
+        detailTitle = title
+        returnTo = tab
+        tab = KugouLiteTab.DiscoverDetail
+    }
+
+    /** 打开发现页编辑面板。 */
+    fun openDiscoverEditor() {
+        returnTo = tab
+        tab = KugouLiteTab.DiscoverEditor
+    }
+
     /**
      * 返回上一级。
      *
@@ -109,9 +131,13 @@ object PageNav {
     fun backHome(): Boolean {
         when (tab) {
             KugouLiteTab.Home -> return false
-            KugouLiteTab.SongList, KugouLiteTab.Artist, KugouLiteTab.Album -> {
+            KugouLiteTab.SongList, KugouLiteTab.Artist, KugouLiteTab.Album,
+            KugouLiteTab.DiscoverDetail, KugouLiteTab.DiscoverEditor -> {
+                val from = tab
                 tab = returnTo
                 clearDetail()
+                // 从编辑面板回来时，让发现页重新读取（可能改了布局/排序/开关）
+                if (from == KugouLiteTab.DiscoverEditor) discoverRefresh++
                 return true
             }
             else -> {
@@ -127,6 +153,7 @@ object PageNav {
         detailPlaylistId = ""
         artistId = ""
         albumId = ""
+        detailSectionId = ""
     }
 
     fun reset() {
@@ -167,4 +194,10 @@ enum class KugouLiteTab {
 
     /** 设置。 */
     Settings,
+
+    /** 发现页区块详情（完整列表）。 */
+    DiscoverDetail,
+
+    /** 发现页编辑面板。 */
+    DiscoverEditor,
 }

@@ -14,7 +14,6 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -27,11 +26,8 @@ import cn.spw.kugou.lite.host.TrackWatcher
 import cn.spw.kugou.lite.sidecar.ApiExec
 import cn.spw.kugou.lite.sidecar.Async
 import cn.spw.kugou.lite.sidecar.AudioCache
-import cn.spw.kugou.lite.sidecar.AuthStore
 import cn.spw.kugou.lite.sidecar.Id3CoverWriter
 import cn.spw.kugou.lite.sidecar.KugouApi
-import cn.spw.kugou.lite.sidecar.SidecarManager
-import cn.spw.kugou.lite.sidecar.rememberAsyncState
 
 /**
  * 酷狗 Lite 页面 —— 渲染在**宿主导航内部**，不是浮层。
@@ -74,7 +70,12 @@ private fun KugouLiteTheme(dark: Boolean, content: @Composable () -> Unit) {
 private fun KugouLiteBody() {
     // 主页永远是根；子页用宿主原生返回按钮回上一级。
     when (PageNav.tab) {
-        KugouLiteTab.Home -> HomePage()
+        KugouLiteTab.Home -> DiscoverPage()
+
+        // 发现页编辑面板与区块详情
+        KugouLiteTab.DiscoverEditor -> DiscoverEditorPage()
+
+        KugouLiteTab.DiscoverDetail -> DiscoverDetailPage()
 
         KugouLiteTab.Search -> SubPage(title = "搜索", onBack = { PageNav.backHome() }) {
             // 搜索页点歌走统一的播放流程（与歌单/榜单/歌手页一致）
@@ -134,115 +135,5 @@ private fun SubPage(
 ) {
     SaltScreen(title = title, onBackClick = onBack) {
         content()
-    }
-}
-
-@Composable
-private fun HomePage() {
-    val sidecarState = rememberAsyncState<String?>()
-    LaunchedEffect(Unit) {
-        if (!SidecarManager.isRunning()) {
-            sidecarState.load { SidecarManager.ensureStarted() }
-        }
-    }
-
-    SaltScreen(title = "Kugou Lite") {
-        Column(
-            Modifier
-                .fillMaxWidth()
-                .padding(bottom = 16.dp),
-        ) {
-            // ------------------------------------------------------ 顶栏
-            //
-            // 用宿主原生 SaltText，字号/字重/颜色全部由 SaltTheme 决定。
-            // 不自己指定颜色，浅色主题下才不会出错。
-            Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 6.dp)) {
-                SaltText("Kugou Lite")
-                SaltText(
-                    "酷狗曲库接入 Salt Player",
-                    modifier = Modifier.padding(top = 2.dp),
-                )
-            }
-
-            // ------------------------------------------------------ 搜索与发现
-            SaltGroupTitle("搜索与发现")
-            SaltCard(Modifier.fillMaxWidth().padding(horizontal = 16.dp)) {
-                SaltItem(
-                    title = "搜索歌曲",
-                    subtitle = "按歌名、歌手搜索在线曲库",
-                    modifier = Modifier.fillMaxWidth(),
-                    onClick = { PageNav.go(KugouLiteTab.Search) },
-                )
-                SaltItem(
-                    title = "每日推荐",
-                    subtitle = "每天更新的推荐歌单",
-                    modifier = Modifier.fillMaxWidth(),
-                    onClick = { PageNav.go(KugouLiteTab.Daily) },
-                )
-            }
-
-            // ------------------------------------------------------ 我的音乐
-            SaltGroupTitle("我的音乐")
-            SaltCard(Modifier.fillMaxWidth().padding(horizontal = 16.dp)) {
-                SaltItem(
-                    title = "我的歌单",
-                    subtitle = "酷狗账号里的自建歌单与收藏",
-                    modifier = Modifier.fillMaxWidth(),
-                    onClick = { PageNav.go(KugouLiteTab.Playlists) },
-                )
-                SaltItem(
-                    title = "排行榜",
-                    subtitle = "飙升榜、热歌榜等官方榜单",
-                    modifier = Modifier.fillMaxWidth(),
-                    onClick = { PageNav.go(KugouLiteTab.Ranks) },
-                )
-            }
-
-            // ------------------------------------------------------ 账户
-            SaltGroupTitle("账户")
-            SaltCard(Modifier.fillMaxWidth().padding(horizontal = 16.dp)) {
-                SaltItem(
-                    title = if (AuthStore.isLoggedIn) {
-                        "已登录：" + (AuthStore.nickname ?: AuthStore.userId)
-                    } else {
-                        "未登录"
-                    },
-                    subtitle = if (AuthStore.isLoggedIn) {
-                        "点击可重新扫码登录"
-                    } else {
-                        "扫码登录后可取流、读歌单、收藏"
-                    },
-                    modifier = Modifier.fillMaxWidth(),
-                    onClick = { PageNav.go(KugouLiteTab.Login) },
-                )
-                SaltItem(
-                    title = "设置",
-                    subtitle = "音质、缓存、退出登录",
-                    modifier = Modifier.fillMaxWidth(),
-                    onClick = { PageNav.go(KugouLiteTab.Settings) },
-                )
-                // 在线服务状态：作为信息放在卡片底部
-                Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 10.dp)) {
-                    SaltText(
-                        text = when (val s = sidecarState.value) {
-                            is Async.Loading -> "正在准备在线服务…"
-                            else -> SidecarManager.statusText()
-                        },
-                    )
-                }
-            }
-
-            // ------------------------------------------------------ 关于
-            SaltGroupTitle("关于")
-            SaltCard(Modifier.fillMaxWidth().padding(horizontal = 16.dp)) {
-                Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp)) {
-                    SaltText("Kugou Lite")
-                    SaltText(
-                        "酷狗曲库接入 Salt Player。搜索、歌单、榜单、逐字歌词。",
-                        modifier = Modifier.padding(top = 4.dp),
-                    )
-                }
-            }
-        }
     }
 }
