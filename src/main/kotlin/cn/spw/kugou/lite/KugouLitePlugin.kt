@@ -10,6 +10,7 @@ import cn.spw.kugou.lite.sidecar.ApiExec
 import cn.spw.kugou.lite.sidecar.AudioCache
 import cn.spw.kugou.lite.ui.CoverLoader
 import cn.spw.kugou.lite.sidecar.AuthStore
+import cn.spw.kugou.lite.sidecar.DiscoverConfig
 import cn.spw.kugou.lite.sidecar.Settings
 import cn.spw.kugou.lite.sidecar.SidecarManager
 import cn.spw.kugou.lite.ui.PageNav
@@ -39,6 +40,7 @@ class KugouLitePlugin(pluginContext: PluginContext) : SpwPlugin(pluginContext) {
             SidecarManager.configure(dir)
             AuthStore.configure(dir)
             Settings.configure(dir)
+            DiscoverConfig.configure(dir)
             // 音频下载缓存：宿主要用本地文件路径才能可靠播放（见 AudioCache 类文档）
             AudioCache.configure(dir)
             CoverLoader.configure(dir)
