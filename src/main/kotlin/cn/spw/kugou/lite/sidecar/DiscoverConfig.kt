@@ -9,9 +9,11 @@ import java.util.Properties
  *
  * ## 配置内容
  *
- * - 布局：单列 / 双列
  * - 区块顺序与显示开关
  * - 私人 FM 档位下标
+ *
+ * 布局（列数）不进配置：发现页按可用宽度自动适配列数（见 `ui/DiscoverFlow.kt`），
+ * 旧版本写入的 `layout` 键在 [fromProperties] 里作为未知键被忽略。
  *
  * ## 为什么独立成一个文件
  *
@@ -29,20 +31,6 @@ object DiscoverConfig {
     private const val TAG = "discover-config"
     private const val FILE_NAME = "discover_config.properties"
 
-    /** 页面布局。 */
-    enum class Layout {
-        SINGLE,
-        PAIR,
-        ;
-
-        companion object {
-            fun from(value: String?): Layout = when (value?.lowercase()) {
-                "pair" -> PAIR
-                else -> SINGLE
-            }
-        }
-    }
-
     /**
      * 一份配置快照。
      *
@@ -50,7 +38,6 @@ object DiscoverConfig {
      * @param hidden 被关闭的区块 id
      */
     data class Config(
-        val layout: Layout,
         val order: List<String>,
         val hidden: Set<String>,
         val fmStationIndex: Int,
@@ -60,7 +47,6 @@ object DiscoverConfig {
 
         /** 把配置序列化成键值映射。 */
         fun toProperties(): Map<String, String> = mapOf(
-            KEY_LAYOUT to if (layout == Layout.PAIR) "pair" else "single",
             KEY_ORDER to order.joinToString(","),
             KEY_HIDDEN to hidden.joinToString(","),
             KEY_FM_STATION to fmStationIndex.toString(),
@@ -86,7 +72,6 @@ object DiscoverConfig {
     /** 区块 id 固定，顺序即默认顺序。新增区块一律追加末尾，不插入中间。 */
     val SECTION_IDS = listOf("fm", "daily", "discover", "newSongs", "newAlbums")
 
-    private const val KEY_LAYOUT = "layout"
     private const val KEY_ORDER = "order"
     private const val KEY_HIDDEN = "hidden"
     private const val KEY_FM_STATION = "fmStationIndex"
@@ -97,7 +82,6 @@ object DiscoverConfig {
     private var cached: Config? = null
 
     fun default(): Config = Config(
-        layout = Layout.SINGLE,
         order = SECTION_IDS.toList(),
         hidden = emptySet(),
         fmStationIndex = 0,
@@ -106,14 +90,12 @@ object DiscoverConfig {
     /**
      * 从键值映射还原配置。
      *
-     * - `layout` 只认 `single` / `pair`
+     * - 未知的键（包括旧版本的 `layout`）一律忽略
      * - `order` 去未知 ID、去重，再把 [SECTION_IDS] 里缺的按原顺序补末尾
      * - `hidden` 只保留 [SECTION_IDS] 中的 id
      * - `fmStationIndex` 用 `toIntOrNull()` 解析且必须在 `0..3`
      */
     fun fromProperties(p: Map<String, String>): Config = try {
-        val layout = Layout.from(p[KEY_LAYOUT])
-
         val order = ArrayList<String>()
         for (id in (p[KEY_ORDER] ?: "").split(',')) {
             val trimmed = id.trim()
@@ -133,7 +115,6 @@ object DiscoverConfig {
         val station = p[KEY_FM_STATION]?.toIntOrNull()?.takeIf { it in 0..3 } ?: 0
 
         Config(
-            layout = layout,
             order = order,
             hidden = hidden,
             fmStationIndex = station,
@@ -167,7 +148,7 @@ object DiscoverConfig {
             default()
         }
         cached = c
-        Diag.info(TAG, "已载入：布局=${c.layout} 可见=${c.visible.size} 档位=${c.fmStationIndex}")
+        Diag.info(TAG, "已载入：可见=${c.visible.size} 档位=${c.fmStationIndex}")
         return c
     }
 

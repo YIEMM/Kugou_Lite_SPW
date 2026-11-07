@@ -6,13 +6,15 @@ import kotlin.test.assertTrue
 
 /**
  * [DiscoverConfig] 的测试：编辑面板配置的默认值、可见性、排序、容错与往返。
+ *
+ * 布局（列数）已改为发现页按可用宽度自动适配，不再持久化；
+ * 旧版本写入的 `layout` 键作为未知键被忽略。
  */
 class DiscoverConfigTest {
 
     @Test
-    fun `默认配置是单列全部显示档位0`() {
+    fun `默认配置全部显示档位0`() {
         val c = DiscoverConfig.default()
-        assertEquals(DiscoverConfig.Layout.SINGLE, c.layout)
         assertEquals(listOf("fm", "daily", "discover", "newSongs", "newAlbums"), c.order)
         assertTrue(c.hidden.isEmpty())
         assertEquals(0, c.fmStationIndex)
@@ -31,7 +33,7 @@ class DiscoverConfigTest {
     }
 
     @Test
-    fun `反序列化容错未知ID与缺失项`() {
+    fun `反序列化容错未知ID遗留layout键与缺失项`() {
         val c = DiscoverConfig.fromProperties(
             mapOf(
                 "layout" to "pair",
@@ -40,7 +42,6 @@ class DiscoverConfigTest {
                 "fmStationIndex" to "99",
             ),
         )
-        assertEquals(DiscoverConfig.Layout.PAIR, c.layout)
         assertEquals("daily", c.order[0])
         assertTrue(c.order.containsAll(listOf("fm", "daily", "discover", "newSongs", "newAlbums")))
         assertEquals(5, c.order.size)
@@ -49,10 +50,7 @@ class DiscoverConfigTest {
 
     @Test
     fun `写入再读出一致`() {
-        val c = DiscoverConfig.default().copy(
-            layout = DiscoverConfig.Layout.PAIR,
-            fmStationIndex = 2,
-        )
+        val c = DiscoverConfig.default().copy(fmStationIndex = 2)
         assertEquals(c, DiscoverConfig.fromProperties(c.toProperties()))
     }
 }

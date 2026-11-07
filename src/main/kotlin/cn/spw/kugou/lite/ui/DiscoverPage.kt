@@ -2,6 +2,7 @@ package cn.spw.kugou.lite.ui
 
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -33,13 +34,13 @@ import cn.spw.kugou.lite.sidecar.rememberAsyncState
  * 私人 FM / 每日推荐 / 刷歌推荐 / 新歌速递 / 新碟上架。
  * 每个区块独立加载、独立失败，隐藏的区块不发请求。
  *
- * ## 布局
+ * ## 布局（自动适配 + 流式）
  *
- * - 单列：纵向堆叠
- * - 双列：除私人 FM 外两两并排（每列 weight(1f)）
- * - 私人 FM 在两种布局下都独占整行
+ * - 列数按页面可用宽度自动适配：每列至少 300dp，1–3 列（规则见 [discoverColumnCount]）
+ * - 内容区块按序流入各行；**末行只剩 1 项时独占整行**，不留半行空洞
+ * - 私人 FM 无论几列都独占整行
  *
- * 布局与区块顺序、显示开关由 [DiscoverConfig] 提供，在「编辑」面板里改。
+ * 区块顺序与显示开关由 [DiscoverConfig] 提供，在「编辑」面板里改。
  *
  * ## 组合期安全
  *
@@ -135,55 +136,55 @@ fun DiscoverPage() {
     }
 
     SaltScreen(title = "发现") {
-        Column(
-            Modifier
-                .fillMaxWidth()
-                .padding(bottom = 16.dp),
-            verticalArrangement = Arrangement.spacedBy(10.dp),
-        ) {
-            // ---------------------------------------------------------- 搜索
-            SearchEntry { PageNav.go(KugouLiteTab.Search) }
+        // BoxWithConstraints 只为拿到页面可用宽度来算列数；内容仍在 Column 里排布
+        BoxWithConstraints(Modifier.fillMaxWidth()) {
+            val columns = discoverColumnCount(maxWidth.value)
+            Column(
+                Modifier
+                    .fillMaxWidth()
+                    .padding(bottom = 16.dp),
+                verticalArrangement = Arrangement.spacedBy(10.dp),
+            ) {
+                // ------------------------------------------------------ 搜索
+                SearchEntry { PageNav.go(KugouLiteTab.Search) }
 
-            val pair = config.layout == DiscoverConfig.Layout.PAIR
+                // ------------------------------------------------------ 私人 FM（永远独占整行）
+                if ("fm" in config.visible) {
+                    FmCard(
+                        state = fm.value,
+                        stationIndex = fmStation,
+                        onPlay = { songs ->
+                            fmSession.markPlayed(songs)
+                            playSongsFromQueue(songs, 0)
+                        },
+                        onSwitchStation = { next ->
+                            fmStation = next
+                            val c = config.copy(fmStationIndex = next)
+                            DiscoverConfig.save(c)
+                            config = c
+                            // 切档 = 全新会话：清空游标与已听 hash（规格第 6 节）
+                            val fresh = PersonalFm.Session(next)
+                            fmSession = fresh
+                            // load 的 block 在后台线程执行，不读 Compose 状态，
+                            // 故把会话捕获成局部变量传进去。
+                            fm.load { loadFmBatch(fresh) }
+                        },
+                        onRetry = { reloadTick++ },
+                    )
+                }
 
-            // ---------------------------------------------------------- 私人 FM（独占整行）
-            if ("fm" in config.visible) {
-                FmCard(
-                    state = fm.value,
-                    stationIndex = fmStation,
-                    onPlay = { songs ->
-                        fmSession.markPlayed(songs)
-                        playSongsFromQueue(songs, 0)
-                    },
-                    onSwitchStation = { next ->
-                        fmStation = next
-                        val c = config.copy(fmStationIndex = next)
-                        DiscoverConfig.save(c)
-                        config = c
-                        // 切档 = 全新会话：清空游标与已听 hash（规格第 6 节）
-                        val fresh = PersonalFm.Session(next)
-                        fmSession = fresh
-                        // load 的 block 在后台线程执行，不读 Compose 状态，
-                        // 故把会话捕获成局部变量传进去。
-                        fm.load { loadFmBatch(fresh) }
-                    },
-                    onRetry = { reloadTick++ },
-                )
-            }
-
-            // ---------------------------------------------------------- 其余 4 个区块
-            val sections = config.visible.filter { it != "fm" }
-            if (pair) {
-                // 两两一组并排
-                sections.chunked(2).forEach { group ->
+                // ---------------------------------------------- 其余内容区块（流式）
+                // 按自动列数流入各行；末行落单的区块独占整行（见 DiscoverFlow.kt）。
+                val sections = config.visible.filter { it != "fm" }
+                discoverFlowRows(sections, columns).forEach { row ->
                     Row(
                         Modifier.fillMaxWidth().padding(horizontal = 16.dp),
                         horizontalArrangement = Arrangement.spacedBy(10.dp),
                     ) {
-                        group.forEach { id ->
-                            Column(Modifier.weight(1f)) {
+                        row.forEach { item ->
+                            Column(Modifier.weight(item.span.toFloat())) {
                                 SectionContent(
-                                    id = id,
+                                    id = item.id,
                                     daily = daily.value,
                                     discover = discover.value,
                                     newSongs = newSongs.value,
@@ -192,35 +193,20 @@ fun DiscoverPage() {
                                 )
                             }
                         }
-                        // 奇数个时补一个空列保持等宽
-                        if (group.size == 1) androidx.compose.foundation.layout.Spacer(Modifier.weight(1f))
                     }
                 }
-            } else {
-                sections.forEach { id ->
-                    Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp)) {
-                        SectionContent(
-                            id = id,
-                            daily = daily.value,
-                            discover = discover.value,
-                            newSongs = newSongs.value,
-                            newAlbums = newAlbums.value,
-                            onRetry = { reloadTick++ },
-                        )
-                    }
-                }
-            }
 
-            // ---------------------------------------------------------- 编辑入口
-            Row(
-                Modifier
-                    .fillMaxWidth()
-                    .clickable { PageNav.openDiscoverEditor() }
-                    .padding(vertical = 14.dp),
-                horizontalArrangement = Arrangement.Center,
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Text3("✎ 编辑", color = KugouTheme.colors.muted)
+                // ------------------------------------------------------ 编辑入口
+                Row(
+                    Modifier
+                        .fillMaxWidth()
+                        .clickable { PageNav.openDiscoverEditor() }
+                        .padding(vertical = 14.dp),
+                    horizontalArrangement = Arrangement.Center,
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text3("✎ 编辑", color = KugouTheme.colors.muted)
+                }
             }
         }
     }
