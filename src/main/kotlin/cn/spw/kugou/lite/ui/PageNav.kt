@@ -213,6 +213,12 @@ enum class KugouLiteTab {
     /** 设置。 */
     Settings,
 
+    /** 歌单广场。 */
+    Square,
+
+    /** 播放历史。 */
+    History,
+
     /** 发现页区块详情（完整列表）。 */
     DiscoverDetail,
 

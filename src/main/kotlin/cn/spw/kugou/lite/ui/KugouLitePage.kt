@@ -110,6 +110,10 @@ private fun KugouLiteBody() {
             SettingsPage()
         }
 
+        KugouLiteTab.Square -> SquarePage()
+
+        KugouLiteTab.History -> HistoryPage()
+
         KugouLiteTab.Artist -> SubPage(
             title = PageNav.detailTitle.ifBlank { "歌手" },
             onBack = { PageNav.backHome() },
