@@ -149,6 +149,22 @@ fun DiscoverPage() {
                 // ------------------------------------------------------ 搜索
                 SearchEntry { PageNav.go(KugouLiteTab.Search) }
 
+                // ------------------------------------------------------ 快捷入口磁贴
+                // 发现页替换了旧 HomePage 后，「我的音乐/排行榜/每日推荐/歌单广场/
+                // 播放历史/设置」失去入口（建造者检查发现的回归）。这里补一行磁贴，
+                // 保持「内容优先」的版面不被破坏。
+                Row(
+                    Modifier.fillMaxWidth().padding(horizontal = 16.dp),
+                    horizontalArrangement = Arrangement.spacedBy(4.dp),
+                ) {
+                    EntryTile(label = "我的音乐", glyph = "♪", onClick = { PageNav.go(KugouLiteTab.Playlists) }, modifier = Modifier.weight(1f))
+                    EntryTile(label = "排行榜", glyph = "☰", onClick = { PageNav.go(KugouLiteTab.Ranks) }, modifier = Modifier.weight(1f))
+                    EntryTile(label = "每日推荐", glyph = "☀", onClick = { PageNav.openDaily() }, modifier = Modifier.weight(1f))
+                    EntryTile(label = "歌单广场", glyph = "▦", onClick = { PageNav.openSquare() }, modifier = Modifier.weight(1f))
+                    EntryTile(label = "播放历史", glyph = "↻", onClick = { PageNav.openHistory() }, modifier = Modifier.weight(1f))
+                    EntryTile(label = "设置", glyph = "⚙", onClick = { PageNav.go(KugouLiteTab.Settings) }, modifier = Modifier.weight(1f))
+                }
+
                 // ------------------------------------------------------ 私人 FM（永远独占整行）
                 if ("fm" in config.visible) {
                     FmCard(
@@ -353,7 +369,11 @@ private fun SongSection(
                     title = title,
                     songs = all.take(4),
                     allSongs = all,
-                    onMore = { PageNav.openDiscoverDetail(id, title) },
+                    // 「每日推荐」区块进每日推荐页（含风格/历史）；其余区块进统一详情页
+                    onMore = {
+                        if (id == "daily") PageNav.openDaily()
+                        else PageNav.openDiscoverDetail(id, title)
+                    },
                     onPick = { list, index -> playSongsFromQueue(list, index) },
                 )
             }
