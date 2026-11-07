@@ -51,6 +51,36 @@ import cn.spw.kugou.lite.sidecar.rememberAsyncState
 /** 专辑列表项（避免在 UI 层重复声明类型）。 */
 private typealias AlbumBriefState = cn.spw.kugou.lite.sidecar.AlbumBrief
 
+/**
+ * 取一批 FM 歌曲，并把游标与去重接上。
+ *
+ * ## 为什么需要这个函数
+ *
+ * 早期实现每次都传 `curMark = null`，等于每轮都从推荐流开头取 ——
+ * 「无限续播」名不副实，而且会出现重复歌曲。
+ *
+ * 现在：
+ * 1. 带上会话里记住的 `curMark`（上一批返回的续流令牌）
+ * 2. 把返回的 `curMark` 写回会话，供下一轮使用
+ * 3. 用 [PersonalFm.Session.filterFresh] 按 hash 去重，过滤已听过的
+ *
+ * 整批都听过时 `filterFresh` 返回空列表 —— 这是**正常成功**，不是失败，
+ * 调用方不该据此报错（对应规格的审查重点 5）。
+ *
+ * @return 本批可播的新歌（可能为空）
+ */
+private fun loadFmBatch(session: PersonalFm.Session): List<Song> {
+    val batch = runCatching {
+        DiscoverApi.personalFm(session.stationIndex, session.curMark)
+    }.getOrElse {
+        Diag.warn("[discover] 私人 FM 请求失败：${it.message}")
+        return emptyList()
+    }
+    // 游标原样回写：不带下一轮会让推荐流从头开始
+    session.curMark = batch.curMark
+    return session.filterFresh(batch.songs)
+}
+
 @Composable
 fun DiscoverPage() {
     // 每次从编辑面板返回（discoverRefresh 递增）都重新读配置，
@@ -65,7 +95,15 @@ fun DiscoverPage() {
     val newSongs = rememberAsyncState<List<Song>>()
     val newAlbums = rememberAsyncState<List<AlbumBriefState>>()
     val fm = rememberAsyncState<List<Song>>()
-    var fmCurMark by remember { mutableStateOf("") }
+    /**
+     * FM 会话：记住 curMark 游标与已听 hash。
+     *
+     * 用 `mutableStateOf` 持有而不是 `remember(fmStation)`：切档时我们在
+     * 事件回调里**同步**换新 Session（清空游标与去重集合），随后 load 闭包
+     * 捕获的就是新会话 —— 若用 `remember(fmStation)`，lambda 会在重组前
+     * 捕获旧 session，把旧档位的游标带进新档位。
+     */
+    var fmSession by remember { mutableStateOf(PersonalFm.Session(fmStation)) }
 
     // 一次性加载：先确保边车就绪，再按 visible 顺序请求。
     // reloadTick 变化时重跑（编辑面板改了配置 / 用户点了重试）。
@@ -90,12 +128,9 @@ fun DiscoverPage() {
             newAlbums.load { runCatching { DiscoverApi.newAlbums() }.getOrDefault(emptyList()) }
         }
         if ("fm" in visible) {
-            fm.load {
-                val batch = runCatching { DiscoverApi.personalFm(fmStation, null) }
-                    .getOrDefault(cn.spw.kugou.lite.sidecar.FmBatch(emptyList(), ""))
-                fmCurMark = batch.curMark
-                batch.songs
-            }
+            // 捕获成局部变量：load 的 block 跑在后台线程，不读 Compose 状态
+            val session = fmSession
+            fm.load { loadFmBatch(session) }
         }
     }
 
@@ -116,18 +151,21 @@ fun DiscoverPage() {
                 FmCard(
                     state = fm.value,
                     stationIndex = fmStation,
-                    onPlay = { songs -> playSongsFromQueue(songs, 0) },
+                    onPlay = { songs ->
+                        fmSession.markPlayed(songs)
+                        playSongsFromQueue(songs, 0)
+                    },
                     onSwitchStation = { next ->
                         fmStation = next
                         val c = config.copy(fmStationIndex = next)
                         DiscoverConfig.save(c)
                         config = c
-                        fm.load {
-                            val batch = runCatching { DiscoverApi.personalFm(next, null) }
-                                .getOrDefault(cn.spw.kugou.lite.sidecar.FmBatch(emptyList(), ""))
-                            fmCurMark = batch.curMark
-                            batch.songs
-                        }
+                        // 切档 = 全新会话：清空游标与已听 hash（规格第 6 节）
+                        val fresh = PersonalFm.Session(next)
+                        fmSession = fresh
+                        // load 的 block 在后台线程执行，不读 Compose 状态，
+                        // 故把会话捕获成局部变量传进去。
+                        fm.load { loadFmBatch(fresh) }
                     },
                     onRetry = { reloadTick++ },
                 )
