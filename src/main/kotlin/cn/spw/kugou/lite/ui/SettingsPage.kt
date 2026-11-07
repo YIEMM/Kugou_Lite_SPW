@@ -145,6 +145,25 @@ fun SettingsPage() {
                 }
             }
         }
+
+        // ------------------------------------------------------ 关于（对齐骨架）
+        SaltGroupTitle("关于")
+
+        SaltCard(Modifier.fillMaxWidth().padding(horizontal = 16.dp)) {
+            Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp)) {
+                Text3("Kugou Lite", color = KugouTheme.colors.text)
+                Text3(
+                    text = "Salt Player 酷狗在线听歌插件 · 0.3.0",
+                    color = KugouTheme.colors.muted,
+                    modifier = Modifier.padding(top = 2.dp),
+                )
+                Text3(
+                    text = "音频由本地 Rust 边车取流；歌词与封面写入本地缓存",
+                    color = KugouTheme.colors.muted,
+                    modifier = Modifier.padding(top = 6.dp),
+                )
+            }
+        }
     }
 }
 
