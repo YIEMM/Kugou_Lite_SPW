@@ -94,15 +94,24 @@ internal fun <T> shouldLoadForTab(state: cn.spw.kugou.lite.sidecar.Async<T>): Bo
 /**
  * 封面网格的列数（按内容宽度）。
  *
- * 复用发现页的断点口径（`discoverColumnCount`：每列 ≥300dp、上限 3），
- * 但网格卡最小可用宽度比区块卡更窄，所以这里用 240dp 一档、上限 4。
+ * ## 为什么是 160dp（用户反馈 #3）
  *
- * **不要在页面里写死 `chunked(3)`** —— 窄窗口会挤成三列小图，
- * 违反规格 §8.1「窄窗口降级正常」。
+ * 最初用 240dp 一档，884px 窗口（内容宽约 660dp）只出 2 列，
+ * 每张封面接近 300dp —— 用户反馈「我的音乐这里的图标都太大了」。
+ *
+ * 降到 160dp 后同一宽度出 4 列，封面约 150dp，与音乐 App 的网格密度一致：
+ *
+ * | 内容宽度 | 列数 |
+ * |---|---|
+ * | 660dp（884px 窗口） | 4 |
+ * | 900dp | 5（封顶 4） |
+ * | <320dp | 1 |
+ *
+ * 上限 4 列：再多封面就小于可读缩略图尺寸。
  */
 internal fun coverGridColumns(availableWidthDp: Float): Int {
     if (availableWidthDp <= 0f) return 1
-    return (availableWidthDp / 240f).toInt().coerceIn(1, 4)
+    return (availableWidthDp / 160f).toInt().coerceIn(1, 4)
 }
 
 /** 把列表按列数切行（供 `Column + Row` 手写网格用，避免 LazyVerticalGrid 的嵌套滚动问题）。 */

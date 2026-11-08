@@ -219,7 +219,7 @@ fun PlaylistPage() {
                                                         title = (if (pl.isFavorites) "♥ " else "") + pl.name,
                                                         subtitle = "${pl.songCount} 首",
                                                         modifier = Modifier.padding(4.dp),
-                                                    ) { PageNav.openPlaylist(pl.id, pl.name) }
+                                                    ) { PageNav.openPlaylist(pl.id, pl.name, pl.songCount) }
                                                     // 自建歌单：行尾「…」→ 两步确认删除
                                                     // （误触即永久删歌单，必须有确认层）
                                                     if (pl.isOwn && !system.contains(pl)) {
@@ -552,7 +552,7 @@ private fun SongTableState(state: Async<List<Song>?>, emptyText: String) {
  * 集中在一处的好处：以后改进播放链路（比如预取下一首、音质重试）
  * 只需要改这里，不用同步改四个页面。
  */
-internal fun playSongsFromQueue(queue: List<Song>, index: Int) {
+internal fun playSongsFromQueue(queue: List<Song>, index: Int, needMore: (() -> Unit)? = null) {
     val song = queue.getOrNull(index) ?: return
     Diag.info("[page] 点歌「${song.title}」- ${song.singer}（${index + 1}/${queue.size}）")
     ApiExec.run({ result ->
@@ -575,8 +575,8 @@ internal fun playSongsFromQueue(queue: List<Song>, index: Int) {
             Diag.warn("[page] 建立队列失败，回退单曲播放")
             PlaybackBridge.play(song, stream, local)
         }
-        // 登记队列并启动切歌监听
-        TrackWatcher.updateQueue(queue, index)
+        // 登记队列并启动切歌监听（带续拉回调：队列快播完时自动拉下一批）
+        TrackWatcher.updateQueue(queue, index, needMore)
         TrackWatcher.start()
     }
 }

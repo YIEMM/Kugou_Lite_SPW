@@ -276,6 +276,59 @@ object PlaybackBridge {
     }
 
     /**
+     * 把新歌**追加**到当前播放队列末尾，不打断正在播放的曲目。
+     *
+     * ## 实现方式（用户反馈 #2 / #4）
+     *
+     * 宿主的 `setPlaybackQueue` 是**整体替换**语义，没有单独的 append。
+     * 所以做法是：
+     * 1. 读出当前正在播的曲目 id，在新列表里找到它的下标
+     * 2. 用「原队列 + 新歌」重建整条队列，起始下标 = 当前曲目下标
+     * 3. 重建后**不调 play()**（保持播放状态），只补齐新歌的 path
+     *
+     * ## 为什么不直接调 setQueueList + play
+     *
+     * 调用 `play()` 会让宿主从头播当前曲目 —— 用户会听到正在放的歌跳回
+     * 开头。实测 `setPlaybackQueue` 只重建队列、不改变播放状态，
+     * 所以只调它（+ prepare）即可。
+     *
+     * @param allSongs 追加后的完整列表（顺序 = 期望的播放顺序）
+     * @param currentTrackId 当前正在播放的曲目 id（用它定位下标）
+     * @return true = 追加成功
+     */
+    fun appendToQueue(
+        allSongs: List<Song>,
+        currentTrackId: String,
+        resolveStream: (Song) -> StreamInfo?,
+    ): Boolean {
+        if (allSongs.isEmpty()) return false
+        val ctrl = ensureController() ?: return false
+        return try {
+            val idx = allSongs.indexOfFirst { buildTrackId(it) == currentTrackId }
+                .takeIf { it >= 0 } ?: 0
+
+            // 用已缓存的本地路径建项；没缓存的新歌留空由后台补
+            val items = allSongs.mapIndexed { i, s ->
+                val path = if (i == idx) cachedLocalPath(s) ?: "" else cachedLocalPath(s) ?: ""
+                newMediaItem(s, buildTrackId(s), path)
+            }.filterNotNull()
+
+            if (items.isEmpty()) return false
+
+            setQueueList?.invoke(ctrl, items, idx)
+            Diag.info(TAG, "已追加队列：共 ${items.size} 首，当前仍为第 ${idx + 1} 首「${allSongs[idx].title}」")
+
+            // 只补新歌的 path，跳过正在播的那首（updateMediaItems 会打断播放）
+            fillQueuePathsAsync(ctrl, allSongs, idx, resolveStream)
+            true
+        } catch (t: Throwable) {
+            val cause = (t as? InvocationTargetException)?.targetException ?: t
+            Diag.warn(TAG, "追加队列失败：${cause.javaClass.simpleName}: ${cause.message}")
+            false
+        }
+    }
+
+    /**
      * 后台补齐队列里每一首的 path。
      *
      * 串行执行，避免同时下载多首把带宽和磁盘打满。
@@ -297,6 +350,9 @@ object PlaybackBridge {
         Thread({
             for ((i, s) in songs.withIndex()) {
                 if (i == skipIndex) continue
+                // 已命中本地缓存的曲目 path 本来就正确，不再重复取流下载。
+                // 续拉时前 N 首通常都已缓存，跳过它们能避免把带宽打满。
+                if (cachedLocalPath(s) != null) continue
                 try {
                     val stream = resolveStream(s) ?: continue
                     // 先取歌词，再让 AudioCache 一并补齐（音频 + 封面 + 逐字歌词）

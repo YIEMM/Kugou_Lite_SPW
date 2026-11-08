@@ -75,21 +75,72 @@ object TrackWatcher {
     @Volatile
     private var queueMap: Map<String, Song> = emptyMap()
 
+    /** 队列的**有序**列表（续拉时要按顺序判断是否到末尾）。 */
+    @Volatile
+    private var queueList: List<Song> = emptyList()
+
+    /**
+     * 续拉回调：当播放位置接近队列末尾时调用，让调用方去拉下一批并追加。
+     *
+     * ## 为什么放在这里（用户反馈 #2 / #4）
+     *
+     * - 歌单详情只拉第一页（50 首），播完就停
+     * - 私人 FM 一次只取 5 首，播完即止
+     *
+     * 两者都需要「快播完时自动续」。回调由 [updateQueue] 的调用方设置：
+     * 详情页设成「拉下一页歌单」，FM 卡设成「拉下一批 FM」。
+     *
+     * 回调在**监听线程**上执行（非 UI 线程），实现方自己负责切线程。
+     */
+    @Volatile
+    private var onNeedMore: (() -> Unit)? = null
+
+    /** 上一次触发续拉的时间，防止同一次切歌反复触发。 */
+    @Volatile
+    private var lastExtendAt = 0L
+    private const val EXTEND_COOLDOWN_MS = 3_000L
+
     /**
      * 登记当前播放队列，供切歌时查表。
      *
      * @param songs 队列里的全部歌曲（顺序与建队列时一致）
      * @param startIndex 本次建队列时**已经处理好**的起始曲目下标。
+     * @param needMore 接近队列末尾时的续拉回调（null = 不需要续拉）
      *
      * 把起始曲目预先标记为「已处理」很重要：点歌流程里已经完成取流、
      * 下载、写 ID3、绑定音频源，监听启动后如果又对同一首重做一遍，
      * 就会在播放开始约 1 秒内触发一次整文件重写 —— 表现为「卡一下」。
      */
-    fun updateQueue(songs: List<Song>, startIndex: Int = 0) {
+    fun updateQueue(songs: List<Song>, startIndex: Int = 0, needMore: (() -> Unit)? = null) {
+        queueList = songs
         queueMap = songs.associateBy { trackIdOf(it) }
+        onNeedMore = needMore
+        lastExtendAt = 0L
         songs.getOrNull(startIndex)?.let { lastHandled.set(trackIdOf(it)) }
-        Diag.info(TAG, "已登记队列 ${queueMap.size} 首（起始曲目已标记为已处理）")
+        Diag.info(TAG, "已登记队列 ${queueMap.size} 首（起始曲目已标记为已处理，续拉=${needMore != null}）")
     }
+
+    /**
+     * 队列增长后调用：刷新映射，不清空「已处理」标记。
+     *
+     * 续拉拿到新歌并追加到播放队列后，用它把新歌登记进来，
+     * 否则切到新歌时会被当成「未知曲目」跳过补流。
+     */
+    fun appendToQueue(added: List<Song>) {
+        if (added.isEmpty()) return
+        queueList = queueList + added
+        queueMap = queueMap + added.associateBy { trackIdOf(it) }
+        // 新追加的歌允许立刻补流，不受旧冷却影响
+        lastExtendAt = 0L
+        Diag.info(TAG, "队列已追加 ${added.size} 首（当前共 ${queueList.size} 首）")
+    }
+
+    /**
+     * 当前正在播放的曲目 id（以 `kugou-` 开头）。
+     *
+     * 供详情页在追加队列时定位「当前播到第几首」。读不到返回空串。
+     */
+    fun currentTrackId(): String = readCurrentTrackId().orEmpty()
 
     fun start() {
         if (running) return
@@ -123,6 +174,34 @@ object TrackWatcher {
 
     // ---------------------------------------------------------------- 内部
 
+    /**
+     * 当前曲目是否已接近队列末尾，是则触发续拉回调。
+     *
+     * 只在「本首已处理过」之后调用一次；用 [EXTEND_COOLDOWN_MS] 防抖，
+     * 避免每 700ms 轮询都触发一遍。
+     */
+    private fun maybeRequestMore(currentId: String) {
+        val cb = onNeedMore ?: return
+        val list = queueList
+        if (list.isEmpty()) return
+
+        val index = list.indexOfFirst { trackIdOf(it) == currentId }
+        if (index < 0) return
+
+        // 剩余可播曲目数（含当前）≤ 2 时补货
+        val remaining = list.size - index
+        if (remaining > 2) return
+
+        val now = System.currentTimeMillis()
+        if (now - lastExtendAt < EXTEND_COOLDOWN_MS) return
+        lastExtendAt = now
+
+        Diag.info(TAG, "队列剩余 $remaining 首，触发续拉")
+        runCatching { cb() }.onFailure {
+            Diag.warn(TAG, "续拉回调异常：${it.javaClass.simpleName}: ${it.message}")
+        }
+    }
+
     private fun pollOnce() {
         val currentId = readCurrentTrackId() ?: return
         if (!currentId.startsWith(ID_PREFIX)) return
@@ -136,6 +215,12 @@ object TrackWatcher {
             Diag.warn(TAG, "切到未知曲目 $currentId（不在已登记队列里）")
             return
         }
+
+        // ---------------------------------------------------------- 续拉判定
+        // 接近队列末尾就通知调用方去拉下一批（歌单下一页 / FM 下一批）。
+        // 放在「未知曲目」检查之后、「补流」之前：即便本首补流失败，
+        // 续拉也该发生，否则队列永远停在末尾。
+        maybeRequestMore(currentId)
 
         // 防止「刚绑定完又被判定为切歌」的抖振：如果这首歌最近刚处理过
         // （例如用户快速连点、或宿主内部短暂回跳），30 秒内不重复绑定。

@@ -172,7 +172,27 @@ fun DiscoverPage() {
                         stationIndex = fmStation,
                         onPlay = { songs ->
                             fmSession.markPlayed(songs)
-                            playSongsFromQueue(songs, 0)
+                            // 私人 FM 续播（用户反馈 #4）：这批 5 首快播完时，
+                            // 监听器回调这里再拉一批、去重后追加进队列。
+                            // 捕获当前 session 为局部常量，避免后台线程读 Compose 状态。
+                            val session = fmSession
+                            playSongsFromQueue(songs, 0) {
+                                val fresh = loadFmBatch(session)
+                                if (fresh.isEmpty()) {
+                                    Diag.info("[discover] FM 续播：本批全听过，停止续拉")
+                                    return@playSongsFromQueue
+                                }
+                                // 追加进播放队列（不打断当前播放），并登记到监听器
+                                cn.spw.kugou.lite.host.TrackWatcher.appendToQueue(fresh)
+                                cn.spw.kugou.lite.host.PlaybackBridge.appendToQueue(
+                                    allSongs = songs + fresh,
+                                    currentTrackId = runCatching {
+                                        cn.spw.kugou.lite.host.TrackWatcher.currentTrackId()
+                                    }.getOrDefault(""),
+                                    resolveStream = { s -> KugouApi.streamUrl(s) },
+                                )
+                                Diag.info("[discover] FM 续播：追加 ${fresh.size} 首")
+                            }
                         },
                         onSwitchStation = { next ->
                             fmStation = next

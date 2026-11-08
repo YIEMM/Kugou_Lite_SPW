@@ -67,6 +67,7 @@ fun DetailPage() {
     val sectionId = PageNav.detailSectionId
     val albumId = PageNav.albumId
     val title = PageNav.detailTitle.ifBlank { defaultTitle(type) }
+    val declaredCount = PageNav.declaredCount
 
     val songs = rememberAsyncState<List<Song>>()
     val albums = rememberAsyncState<List<AlbumBrief>>()
@@ -100,8 +101,43 @@ fun DetailPage() {
         val s = songs.value
         if (s is Async.Success) {
             allSongs = ArrayList(s.value)
-            hasMore = s.value.size >= 50
+            hasMore = s.value.size >= PLAYLIST_PAGE_SIZE
         }
+    }
+
+    /**
+     * 拉下一页并追加（手动按钮与自动续拉共用）。
+     *
+     * 自动续拉由 [TrackWatcher] 在「队列快播完」时回调，跑在监听线程上；
+     * 所以这里自己负责防重入（[loadingMore]）。
+     */
+    fun requestNextPage() {
+        if (loadingMore || !hasMore) return
+        if (type != "playlist" && type != "square") return
+        loadingMore = true
+        val next = page + 1
+        cn.spw.kugou.lite.sidecar.ApiExec.run(onResult = { res ->
+            val more = res.getOrNull().orEmpty()
+            page = next
+            if (more.isNotEmpty()) {
+                val merged = ArrayList<Song>(allSongs.size + more.size).apply {
+                    addAll(allSongs); addAll(more)
+                }
+                allSongs = merged
+                // 关键：把新歌同步进宿主的播放队列，否则自动续播时新歌没路径
+                runCatching {
+                    cn.spw.kugou.lite.host.TrackWatcher.appendToQueue(more)
+                    cn.spw.kugou.lite.host.PlaybackBridge.appendToQueue(
+                        allSongs = merged,
+                        currentTrackId = currentPlayingTrackId(),
+                        resolveStream = { s -> KugouApi.streamUrl(s) },
+                    )
+                }.onFailure { Diag.warn("[detail] 追加队列失败：${it.message}") }
+            }
+            hasMore = more.size >= PLAYLIST_PAGE_SIZE
+            loadingMore = false
+            Diag.info("[detail] 加载第 $next 页：${more.size} 首（共 ${allSongs.size} 首）")
+        }) { KugouApi.playlistSongs(playlistId, page = next) }
     }
 
     SaltScreen(title = title, onBackClick = { PageNav.backHome() }) {
@@ -116,7 +152,7 @@ fun DetailPage() {
                 PageHero(
                     coverUrl = heroCover,
                     title = title,
-                    meta = heroMeta(type, list.size, albumList.size),
+                    meta = heroMeta(type, list.size, albumList.size, declaredCount),
                 ) {
                     if (list.isNotEmpty()) {
                         ActionChip("▶ 播放全部") { playSongsFromQueue(list, 0) }
@@ -130,8 +166,19 @@ fun DetailPage() {
                 when {
                     type == "discover" && sectionId == "newAlbums" -> AlbumGridBlock(albums.value)
                     else -> {
-                        SongTableBlock(songs.value, allSongs, showAlbum)
-                        // 加载更多（仅歌单/广场这类可能超过一页的来源）
+                        SongTableBlock(
+                            state = songs.value,
+                            allSongs = allSongs,
+                            showAlbum = showAlbum,
+                            // 播放时把「自动续拉」能力交给监听器（用户反馈 #2）：
+                            // 队列快播完时它会回调这里拉下一页并追加，无需用户手动点。
+                            needMore = if (type == "playlist" || type == "square") {
+                                { requestNextPage() }
+                            } else {
+                                null
+                            },
+                        )
+                        // 手动「加载更多」（与自动续拉共用同一个 requestNextPage）
                         if (hasMore && (type == "playlist" || type == "square")) {
                             Row(
                                 Modifier.fillMaxWidth().padding(vertical = 12.dp),
@@ -140,17 +187,7 @@ fun DetailPage() {
                                 Text3(
                                     text = if (loadingMore) "加载中…" else "加载更多",
                                     color = if (loadingMore) KugouTheme.colors.faint else KugouTheme.colors.text,
-                                    modifier = Modifier.clickable(enabled = !loadingMore) {
-                                        loadingMore = true
-                                        val next = page + 1
-                                        cn.spw.kugou.lite.sidecar.ApiExec.run(onResult = { res ->
-                                            val more = res.getOrNull().orEmpty()
-                                            page = next
-                                            allSongs = ArrayList(allSongs + more)
-                                            hasMore = more.size >= 50
-                                            loadingMore = false
-                                        }) { KugouApi.playlistSongs(playlistId, page = next) }
-                                    },
+                                    modifier = Modifier.clickable(enabled = !loadingMore) { requestNextPage() },
                                 )
                             }
                         }
@@ -160,6 +197,16 @@ fun DetailPage() {
         }
     }
 }
+
+/**
+ * 当前正在播放的曲目 id（供追加队列时定位下标）。
+ *
+ * 读不到时返回空串 —— [cn.spw.kugou.lite.host.PlaybackBridge.appendToQueue]
+ * 会把空 id 当成「找不到」从而退化为从第 1 首重建，不会崩。
+ */
+private fun currentPlayingTrackId(): String = runCatching {
+    cn.spw.kugou.lite.host.TrackWatcher.currentTrackId()
+}.getOrDefault("")
 
 /** 标题兜底（PageNav 没给 title 时按类型给默认名）。 */
 private fun defaultTitle(type: String): String = when (type) {
@@ -171,13 +218,32 @@ private fun defaultTitle(type: String): String = when (type) {
     else -> "歌单"
 }
 
-/** 头部元信息文案。 */
-private fun heroMeta(type: String, songCount: Int, albumCount: Int): String = when (type) {
-    "album" -> if (songCount > 0) "专辑 · $songCount 首" else "专辑"
-    "rank" -> if (songCount > 0) "榜单 · $songCount 首" else "榜单"
-    "daily" -> if (songCount > 0) "每日推荐 · $songCount 首" else "每日推荐"
-    "discover" -> if (albumCount > 0) "新碟 · $albumCount 张" else if (songCount > 0) "$songCount 首" else "发现"
-    else -> if (songCount > 0) "歌单 · $songCount 首" else "歌单"
+/**
+ * 头部元信息文案。
+ *
+ * ## 为什么要把「声明数量」和「实际数量」都显示出来（用户反馈 #1）
+ *
+ * 酷狗歌单的 `count` 是**元数据声明的曲目数**，但接口实际返回的可能更少
+ * —— 失效/下架的曲目不返回（实测「好听的沉浸式日文歌」声明 18 首、
+ * 接口只回 16 首，两首已失效）。
+ *
+ * 早期只显示实际条数，用户看到歌单列表写 18、进来只有 16，会以为是 bug。
+ * 现在两者不一致时明确标注，并说明原因。
+ */
+private fun heroMeta(type: String, songCount: Int, albumCount: Int, declared: Int = 0): String {
+    val base = when (type) {
+        "album" -> if (songCount > 0) "专辑 · $songCount 首" else "专辑"
+        "rank" -> if (songCount > 0) "榜单 · $songCount 首" else "榜单"
+        "daily" -> if (songCount > 0) "每日推荐 · $songCount 首" else "每日推荐"
+        "discover" -> if (albumCount > 0) "新碟 · $albumCount 张" else if (songCount > 0) "$songCount 首" else "发现"
+        else -> if (songCount > 0) "歌单 · $songCount 首" else "歌单"
+    }
+    // 声明数 > 实际数：说明有曲目在服务端已失效（接口不返回）
+    return if (declared > songCount && songCount > 0) {
+        "$base（声明 $declared 首，${declared - songCount} 首已失效）"
+    } else {
+        base
+    }
 }
 
 /** 操作组小胶囊（中性底色，不用 accent）。 */
@@ -192,12 +258,17 @@ private fun ActionChip(label: String, onClick: () -> Unit) {
     }
 }
 
-/** 歌曲表格块：状态 + 行。@param allSongs 累计已加载（含分页追加），用于建播放队列 */
+/** 歌曲表格块：状态 + 行。
+ *
+ * @param allSongs 累计已加载（含分页追加），用于建播放队列
+ * @param needMore 播放时的续拉回调，透传给 [playSongsFromQueue]
+ */
 @Composable
 private fun SongTableBlock(
     state: Async<List<Song>>,
     allSongs: List<Song>,
     showAlbum: Boolean,
+    needMore: (() -> Unit)? = null,
 ) {
     when (val s = state) {
         is Async.Idle, is Async.Loading -> DetailStatus("正在加载…")
@@ -218,7 +289,7 @@ private fun SongTableBlock(
                             album = song.albumName,
                             duration = song.durationText,
                             showAlbum = showAlbum,
-                            onRowClick = { playSongsFromQueue(display, index) },
+                            onRowClick = { playSongsFromQueue(display, index, needMore) },
                             cells = DataTableCells(
                                 onArtist = if (song.artists.firstOrNull()?.id?.isNotBlank() == true) {
                                     { PageNav.openArtist(song.artists.first().id, song.artists.first().name) }
