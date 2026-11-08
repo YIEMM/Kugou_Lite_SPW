@@ -157,12 +157,12 @@ fun DiscoverPage() {
                     Modifier.fillMaxWidth().padding(horizontal = 16.dp),
                     horizontalArrangement = Arrangement.spacedBy(4.dp),
                 ) {
-                    EntryTile(label = "我的音乐", glyph = "♪", onClick = { PageNav.go(KugouLiteTab.Playlists) }, modifier = Modifier.weight(1f))
-                    EntryTile(label = "排行榜", glyph = "☰", onClick = { PageNav.go(KugouLiteTab.Ranks) }, modifier = Modifier.weight(1f))
-                    EntryTile(label = "每日推荐", glyph = "☀", onClick = { PageNav.openDaily() }, modifier = Modifier.weight(1f))
-                    EntryTile(label = "歌单广场", glyph = "▦", onClick = { PageNav.openSquare() }, modifier = Modifier.weight(1f))
-                    EntryTile(label = "播放历史", glyph = "↻", onClick = { PageNav.openHistory() }, modifier = Modifier.weight(1f))
-                    EntryTile(label = "设置", glyph = "⚙", onClick = { PageNav.go(KugouLiteTab.Settings) }, modifier = Modifier.weight(1f))
+                    EntryTile(label = "我的音乐", icon = KugouIcons.Music, onClick = { PageNav.go(KugouLiteTab.Playlists) }, modifier = Modifier.weight(1f))
+                    EntryTile(label = "排行榜", icon = KugouIcons.Ranks, onClick = { PageNav.go(KugouLiteTab.Ranks) }, modifier = Modifier.weight(1f))
+                    EntryTile(label = "每日推荐", icon = KugouIcons.Daily, onClick = { PageNav.openDaily() }, modifier = Modifier.weight(1f))
+                    EntryTile(label = "歌单广场", icon = KugouIcons.Square, onClick = { PageNav.openSquare() }, modifier = Modifier.weight(1f))
+                    EntryTile(label = "播放历史", icon = KugouIcons.History, onClick = { PageNav.openHistory() }, modifier = Modifier.weight(1f))
+                    EntryTile(label = "设置", icon = KugouIcons.Settings, onClick = { PageNav.go(KugouLiteTab.Settings) }, modifier = Modifier.weight(1f))
                 }
 
                 // ------------------------------------------------------ 私人 FM（永远独占整行）

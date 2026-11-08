@@ -319,15 +319,18 @@ internal fun DataTableRow(
 }
 
 /**
- * 快捷入口磁贴：图标 + 文字，悬停高亮。
+ * 快捷入口磁贴：矢量图标 + 文字，悬停高亮。
  *
  * 在父 Row 里用 `Modifier.weight(1f)` 平分宽度（调用方负责）。
+ *
+ * @param icon 矢量图标（见 [KugouIcons]）；之前用 Unicode 字形（`♪ ☰ ☀ ▦ ↻ ⚙`），
+ *             真机发现 `☀` 会被渲染成彩色 emoji、各字形粗细也不一致，故改为矢量。
  */
 @OptIn(androidx.compose.ui.ExperimentalComposeUiApi::class)
 @Composable
 internal fun EntryTile(
     label: String,
-    glyph: String,
+    icon: androidx.compose.ui.graphics.vector.ImageVector,
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
@@ -343,11 +346,11 @@ internal fun EntryTile(
             .padding(vertical = 10.dp, horizontal = 4.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
-        Text3(text = glyph, color = c.text)
+        KugouIcon(vector = icon, size = 20.dp, tint = if (hovered) c.text else c.muted)
         Text3(
             text = label,
-            color = c.muted,
-            modifier = Modifier.padding(top = 3.dp),
+            color = if (hovered) c.text else c.muted,
+            modifier = Modifier.padding(top = 4.dp),
             maxLines = 1,
             overflow = TextOverflow.Ellipsis,
         )
