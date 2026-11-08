@@ -204,20 +204,25 @@ internal fun SlidingTabBar(
                         size = Size(width, 2.dp.toPx()),
                     )
                 }
-            }
-            .horizontalScroll(rememberScrollState()),
+            },
         horizontalArrangement = Arrangement.spacedBy(gap),
     ) {
         tabs.forEachIndexed { i, label ->
+            // ⚠️ 两个真机踩过的坑，改之前先看注释：
+            // 1. clickable 必须在 padding **之后**，否则点击区只有文字那 ~18px
+            // 2. 外层**不能**加 horizontalScroll —— 滚动手势会拦掉点击，
+            //    Tab 一个都点不动（日志证实 onSelect 从不触发）。
+            //    Tab 数量本来就不多（≤6），用 weight 平分即可，不需要滚动。
             Text3(
                 text = label,
                 color = if (i == safeSelected) c.text else c.muted,
                 modifier = Modifier
+                    .weight(1f)
                     .onSizeChanged { sz ->
                         widths = widths.toMutableList().also { it[i] = sz.width.toFloat() }
                     }
-                    .clickable { onSelect(i) }
-                    .padding(vertical = 9.dp),
+                    .padding(horizontal = 4.dp, vertical = 9.dp)
+                    .clickable { onSelect(i) },
                 maxLines = 1,
             )
         }
