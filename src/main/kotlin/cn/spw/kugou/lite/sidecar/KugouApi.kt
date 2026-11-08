@@ -947,7 +947,16 @@ object KugouApi {
      * @param fileSize 同一对象里的 `size` 字段（字节），没有则传 0
      */
     private fun parseDurationSec(obj: Map<String, Any?>, fileSize: Long): Int {
-        val raw = firstInt(obj, "Duration", "duration", "timelen", "timeLength")
+        // ⚠️ 字段名四种风格都要覆盖（各接口不一致，漏一个就显示 --:--）：
+        //   /search              timeLength
+        //   /playlist/track/all  timelen（毫秒）
+        //   /everyday/recommend  **time_length**（秒）—— 真机验证踩到：只找 timelen
+        //                        时每日推荐全部显示 --:--
+        //   /everyday/style/recommend、/user/history 的 info  timelen（毫秒）
+        val raw = firstInt(
+            obj,
+            "Duration", "duration", "timelen", "timeLength", "time_length", "timelength",
+        )
         if (raw <= 0) return 0
 
         // 有文件大小时用它交叉校验，这是最可靠的判据

@@ -278,6 +278,9 @@ internal fun DataTableRow(
                 color = c.muted,
                 modifier = Modifier
                     .padding(top = 1.dp)
+                    // 行内可点单元（歌手名）：Compose 中子级 pointerInput 先于
+                    // 父级 clickable 取得事件，所以点歌手名会进歌手页、点别处才播放。
+                    // 注意点击区域只有这一行文字（约 14px 高），要点准。
                     .then(
                         if (cells.onArtist != null) {
                             Modifier.clickable { cells.onArtist.invoke(subtitle) }
