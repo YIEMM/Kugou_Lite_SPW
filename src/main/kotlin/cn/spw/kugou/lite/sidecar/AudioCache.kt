@@ -30,6 +30,35 @@ import java.net.URI
  *
  * 下载用 `.part` 临时文件 + 原子改名：下载中断不会留下半截文件被误当成完整音频。
  */
+/**
+ * 歌词文件生成器版本。
+ *
+ * 每改一次歌词生成逻辑（尤其是译文提取）就 +1 —— 旧版本的 `.lrc`
+ * 会因此被重写，不会永远留着无译文的旧文件（用户反馈「有些歌词没有翻译」）。
+ *
+ * - v2：KRC `[language:]` 译文提取（type=1）
+ * - v3：加版本戳 + 陈旧缓存失效。v2 之前写出的文件没有戳，
+ *   而「已有非空 .lrc 就跳过」让它们永远不会被新代码覆盖。
+ */
+const val LRC_GENERATOR_VERSION = "v3"
+
+/** 生成器标记，写进 `[by:]` 标签。 */
+private const val GENERATOR_TAG = "KugouLite/$LRC_GENERATOR_VERSION"
+
+/**
+ * 已有 `.lrc` 是否需要重写：头部 `[by:]` 是否带当前版本的生成器戳。
+ * 早期文件（`[by:]` 为空或没有戳）一律重写。
+ */
+fun needsLrcRewrite(existing: String): Boolean = !existing.contains(GENERATOR_TAG)
+
+/** 给生成的歌词文本加上生成器标记（放在头部元信息里，并去掉旧的 `[by:]` 行）。 */
+fun withGeneratorTag(text: String): String {
+    val cleaned = text.lineSequence()
+        .filterNot { it.trimStart().startsWith("[by:") }
+        .joinToString("\n")
+    return "[by:$GENERATOR_TAG]" + "\n" + cleaned
+}
+
 object AudioCache {
 
     private const val TAG = "cache"
@@ -201,11 +230,14 @@ object AudioCache {
         if (lyrics.isBlank()) return false
         return try {
             val isKrc = KrcLyrics.isKrc(lyrics)
-            val text = if (isKrc) KrcLyrics.toEnhancedLrc(lyrics) else lyrics
+            val text = withGeneratorTag(if (isKrc) KrcLyrics.toEnhancedLrc(lyrics) else lyrics)
             val lrc = File(audioFile.parentFile, audioFile.nameWithoutExtension + ".lrc")
 
-            // 已有非空歌词文件就跳过（避免每次播放重写磁盘）
-            if (lrc.isFile && lrc.length() > 100) {
+            // 已有歌词但版本过旧（或没有生成器戳）就重写；当前版本才跳过。
+            // 早期代码不会提取 [language:] 译文，写出的 .lrc 只有原文，
+            // 而「非空就跳过」让它们永远不会被新代码覆盖 —— 这就是
+            // 用户反馈「有些歌词没有翻译」的根因。
+            if (lrc.isFile && lrc.length() > 100 && !needsLrcRewrite(lrc.readText(Charsets.UTF_8))) {
                 return true
             }
 
@@ -213,10 +245,11 @@ object AudioCache {
 
             if (isKrc) {
                 val krcFile = File(audioFile.parentFile, audioFile.nameWithoutExtension + ".krc")
-                if (!krcFile.isFile) {
-                    runCatching { krcFile.writeText(KrcLyrics.sanitize(lyrics), Charsets.UTF_8) }
+                // .krc 也随版本失效，保证排查用的原文与 .lrc 同源
+                if (!krcFile.isFile || needsLrcRewrite(krcFile.readText(Charsets.UTF_8))) {
+                    runCatching { krcFile.writeText(withGeneratorTag(KrcLyrics.sanitize(lyrics)), Charsets.UTF_8) }
                 }
-                Diag.info(TAG, "已写入逐字歌词 ${lrc.name}（${text.length} 字符，KRC 源 ${lyrics.length} 字符）")
+                Diag.info(TAG, "已写入逐字歌词 ${lrc.name}（${text.length} 字符，KRC 源 ${lyrics.length} 字符，译文=${KrcLyrics.extractTranslation(lyrics).size} 行）")
             } else {
                 Diag.info(TAG, "已写入逐行歌词 ${lrc.name}（${lyrics.length} 字符）")
             }

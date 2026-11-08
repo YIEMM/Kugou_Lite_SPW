@@ -994,6 +994,17 @@ object KugouApi {
         keys.firstNotNullOfOrNull { k -> obj[k]?.let { JsonLite.asLong(it) } } ?: 0L
 
     /**
+     * 供同包内的其它 API 单元（如 [WelfareApi]）复用的 POST 入口。
+     *
+     * [post] 是 private 的：它承担登录态注入、`20028/20017/20018`
+     * 的「需要登录」判定、超时与异常兜底这一整套策略，不能复制第二份
+     * —— 复制出去后任何一处修了另一处就漏。所以只开一个 internal 的
+     * 薄壳，把同一套行为借出去。
+     */
+    internal fun postRaw(path: String, params: Map<String, String> = emptyMap()): Any? =
+        post(path, params)
+
+    /**
      * 供同包内的其它 API 单元（如 [DiscoverApi]）复用的 GET 入口。
      *
      * [get] 是 private 的：它承担了登录态注入、`20028/20017/20018`

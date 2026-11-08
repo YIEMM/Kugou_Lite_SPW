@@ -20,6 +20,8 @@ import cn.spw.kugou.lite.sidecar.ApiExec
 import cn.spw.kugou.lite.sidecar.AudioCache
 import cn.spw.kugou.lite.sidecar.AuthStore
 import cn.spw.kugou.lite.sidecar.Settings
+import cn.spw.kugou.lite.sidecar.WelfareApi
+import cn.spw.kugou.lite.sidecar.receiveDayFrom
 
 /**
  * 设置页。
@@ -143,6 +145,105 @@ fun SettingsPage() {
                 ) {
                     Text3("退出登录", color = KugouTheme.colors.danger)
                 }
+            }
+        }
+
+        // ------------------------------------------------------ 福利（签到等）
+        SaltGroupTitle("福利（参考 md3Music 签到实现）")
+
+        SaltCard(Modifier.fillMaxWidth().padding(horizontal = 16.dp)) {
+            Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp)) {
+                // 自动签到开关
+                var auto by remember { mutableStateOf(WelfareApi.autoSignIn) }
+                var busy by remember { mutableStateOf(false) }
+                var result by remember { mutableStateOf(WelfareApi.lastResult) }
+
+                Row(
+                    Modifier
+                        .fillMaxWidth()
+                        .clickable {
+                            val next = !auto
+                            auto = next
+                            WelfareApi.autoSignIn = next
+                        }
+                        .padding(vertical = 6.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Column(Modifier.weight(1f)) {
+                        Text3("自动签到", color = KugouTheme.colors.text)
+                        Text3(
+                            text = "打开插件页时自动领畅听/概念版 VIP，每天只试一次",
+                            color = KugouTheme.colors.muted,
+                            modifier = Modifier.padding(top = 2.dp),
+                        )
+                    }
+                    Text3(
+                        text = if (auto) "● 开" else "○ 关",
+                        color = if (auto) KugouTheme.colors.text else KugouTheme.colors.faint,
+                    )
+                }
+
+                // 手动按钮：立即签到 / 广告领取
+                Row(
+                    Modifier.fillMaxWidth().padding(top = 8.dp),
+                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                ) {
+                    Text3(
+                        text = if (busy) "处理中…" else "立即签到",
+                        color = if (busy) KugouTheme.colors.faint else KugouTheme.colors.text,
+                        modifier = Modifier
+                            .clickable(enabled = !busy && AuthStore.isLoggedIn) {
+                                busy = true
+                                ApiExec.run(onResult = { r ->
+                                    val (ok, msg) = r.getOrElse { false to "签到异常：${it.message}" }
+                                    result = (if (ok) "✓ " else "✗ ") + msg
+                                    WelfareApi.lastResult = result
+                                    busy = false
+                                    Diag.info("[settings] 手动签到：$result")
+                                }) {
+                                    val day = receiveDayFrom(WelfareApi.serverTimestampSec())
+                                    WelfareApi.markTriedToday(AuthStore.userId.orEmpty(), day)
+                                    WelfareApi.signIn(day)
+                                }
+                            }
+                            .padding(vertical = 8.dp, horizontal = 12.dp),
+                    )
+                    Text3(
+                        text = "广告领 VIP",
+                        color = KugouTheme.colors.text,
+                        modifier = Modifier
+                            .clickable(enabled = !busy && AuthStore.isLoggedIn) {
+                                busy = true
+                                ApiExec.run(onResult = { r ->
+                                    val (ok, msg) = r.getOrElse { false to "领取异常：${it.message}" }
+                                    result = (if (ok) "✓ " else "✗ ") + msg
+                                    WelfareApi.lastResult = result
+                                    busy = false
+                                }) { WelfareApi.claimAdVip() }
+                            }
+                            .padding(vertical = 8.dp, horizontal = 12.dp),
+                    )
+                }
+
+                if (!AuthStore.isLoggedIn) {
+                    Text3(
+                        text = "未登录：签到需要先登录酷狗账号",
+                        color = KugouTheme.colors.muted,
+                        modifier = Modifier.padding(top = 6.dp),
+                    )
+                }
+                if (result.isNotBlank()) {
+                    Text3(
+                        text = "上次结果：$result",
+                        color = KugouTheme.colors.muted,
+                        modifier = Modifier.padding(top = 8.dp),
+                    )
+                }
+                Text3(
+                    text = "注：这些是酷狗概念版福利接口，可能被风控或停用（错误码 20002/20028）。失败会如实提示，不影响听歌。",
+                    color = KugouTheme.colors.faint,
+                    modifier = Modifier.padding(top = 8.dp),
+                )
             }
         }
 

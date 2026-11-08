@@ -41,6 +41,7 @@ class KugouLitePlugin(pluginContext: PluginContext) : SpwPlugin(pluginContext) {
             AuthStore.configure(dir)
             Settings.configure(dir)
             DiscoverConfig.configure(dir)
+        cn.spw.kugou.lite.sidecar.WelfareApi.configure(dir)
         // 关注状态的本地记忆（服务端 user_status 不回落，见裁决 R3）
         cn.spw.kugou.lite.ui.FollowStore.configure(dir)
             // 音频下载缓存：宿主要用本地文件路径才能可靠播放（见 AudioCache 类文档）
@@ -63,6 +64,25 @@ class KugouLitePlugin(pluginContext: PluginContext) : SpwPlugin(pluginContext) {
         } else {
             Diag.warn("未授权 class-transform，页面注入跳过。请到插件设置勾选后重启。")
         }
+
+        // 自动签到（用户选择「自动 + 失败提示」）：异步、每天一次、失败只记录不弹窗。
+        // 用 ApiExec 后台线程，绝不阻塞启动或组合树。
+        runCatching {
+            val welfare = cn.spw.kugou.lite.sidecar.WelfareApi
+            if (welfare.autoSignIn && AuthStore.isLoggedIn) {
+                cn.spw.kugou.lite.sidecar.ApiExec.run(onResult = {}) {
+                    val day = cn.spw.kugou.lite.sidecar.receiveDayFrom(welfare.serverTimestampSec())
+                    val uid = AuthStore.userId.orEmpty()
+                    if (!welfare.alreadyTriedToday(uid, day)) {
+                        welfare.markTriedToday(uid, day)
+                        val (ok, msg) = welfare.signIn(day)
+                        welfare.lastResult = (if (ok) "自动签到 ✓ " else "自动签到 ✗ ") + msg
+                        Diag.info("[welfare] ${welfare.lastResult}")
+                    }
+                }
+            }
+        }.onFailure { Diag.warn("[welfare] 自动签到跳过：${it.message}") }
+
         Diag.info("=== start 完成 ===")
     }
 
