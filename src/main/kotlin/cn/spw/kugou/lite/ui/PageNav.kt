@@ -126,7 +126,11 @@ object PageNav {
      * 顶层页回 Home，详情帧逐层 pop。
      */
     fun backHome(): Boolean {
-        if (current.tab == KugouLiteTab.Home) return false
+        if (current.tab == KugouLiteTab.Home) {
+            cn.spw.kugou.lite.diag.Diag.info("[nav] backHome: 已在 Home，交给宿主")
+            return false
+        }
+        cn.spw.kugou.lite.diag.Diag.info("[nav] backHome: 当前=${current.tab} 栈深=${backStack.size}")
         if (backStack.isEmpty()) {
             val wasEditor = current.tab == KugouLiteTab.DiscoverEditor
             current = Frame(KugouLiteTab.Home)

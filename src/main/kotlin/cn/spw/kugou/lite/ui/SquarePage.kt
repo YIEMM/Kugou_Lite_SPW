@@ -79,8 +79,9 @@ fun SquarePage() {
         }
     }
 
-    SaltScreen(title = "歌单广场") {
-        Column(Modifier.fillMaxWidth().padding(bottom = 16.dp)) {
+    // 外层由 KugouLitePage 的 SubPage 提供宿主原生页框（标题 + 返回），
+    // 这里不要再套 SaltScreen（双层会双标题栏，且内层返回键会退出整个插件页）。
+    Column(Modifier.fillMaxWidth().padding(bottom = 16.dp)) {
             if (tabs.size > 1) {
                 SlidingTabBar(tabs = tabs, selected = tab, onSelect = { idx ->
                     tab = idx
@@ -158,7 +159,6 @@ fun SquarePage() {
             }
         }
     }
-}
 
 /** 播放历史：按日期分组的密集列表（`/user/history`，实测返回非时间序，API 层已重排）。 */
 @Composable
@@ -166,8 +166,8 @@ fun HistoryPage() {
     val state = rememberAsyncState<List<ExploreApi.HistoryDay>>()
     LaunchedEffect(Unit) { state.load { ExploreApi.history() } }
 
-    SaltScreen(title = "播放历史") {
-        Column(Modifier.fillMaxWidth().padding(bottom = 16.dp)) {
+    // 外层由 SubPage 提供页框（同 SquarePage 的说明）。
+    Column(Modifier.fillMaxWidth().padding(bottom = 16.dp)) {
             when (val s = state.value) {
                 is Async.Idle, is Async.Loading -> StatusCardSimple("正在加载…")
                 is Async.Failure -> StatusCardSimple("加载失败：${s.message}")
@@ -201,7 +201,6 @@ fun HistoryPage() {
             }
         }
     }
-}
 
 /** 广场封面网格列数（内容区宽度稳定，固定三列）。 */
 private const val SQUARE_GRID_COLUMNS = 3

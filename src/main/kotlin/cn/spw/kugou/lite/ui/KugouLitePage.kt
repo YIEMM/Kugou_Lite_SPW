@@ -105,9 +105,13 @@ private fun KugouLiteBody() {
             SettingsPage()
         }
 
-        KugouLiteTab.Square -> SquarePage()
+        KugouLiteTab.Square -> SubPage(title = "歌单广场", onBack = { PageNav.backHome() }) {
+            SquarePage()
+        }
 
-        KugouLiteTab.History -> HistoryPage()
+        KugouLiteTab.History -> SubPage(title = "播放历史", onBack = { PageNav.backHome() }) {
+            HistoryPage()
+        }
 
         KugouLiteTab.Artist -> SubPage(
             title = PageNav.detailTitle.ifBlank { "歌手" },
