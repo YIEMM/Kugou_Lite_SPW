@@ -221,14 +221,8 @@ private fun defaultTitle(type: String): String = when (type) {
 /**
  * 头部元信息文案。
  *
- * ## 为什么要把「声明数量」和「实际数量」都显示出来（用户反馈 #1）
- *
- * 酷狗歌单的 `count` 是**元数据声明的曲目数**，但接口实际返回的可能更少
- * —— 失效/下架的曲目不返回（实测「好听的沉浸式日文歌」声明 18 首、
- * 接口只回 16 首，两首已失效）。
- *
- * 早期只显示实际条数，用户看到歌单列表写 18、进来只有 16，会以为是 bug。
- * 现在两者不一致时明确标注，并说明原因。
+ * @param declared 列表页声明的曲目数（0 = 未知）。仅在确实少于声明数时
+ *        追加提示——这是兜底，正常收藏歌单走 `list_create_gid` 后应能拿全。
  */
 private fun heroMeta(type: String, songCount: Int, albumCount: Int, declared: Int = 0): String {
     val base = when (type) {
@@ -238,9 +232,8 @@ private fun heroMeta(type: String, songCount: Int, albumCount: Int, declared: In
         "discover" -> if (albumCount > 0) "新碟 · $albumCount 张" else if (songCount > 0) "$songCount 首" else "发现"
         else -> if (songCount > 0) "歌单 · $songCount 首" else "歌单"
     }
-    // 声明数 > 实际数：说明有曲目在服务端已失效（接口不返回）
     return if (declared > songCount && songCount > 0) {
-        "$base（声明 $declared 首，${declared - songCount} 首已失效）"
+        "$base（声明 $declared 首，${declared - songCount} 首暂不可用）"
     } else {
         base
     }

@@ -222,9 +222,20 @@ data class Playlist(
     val type: Int = 0,
     /** 是否是「我喜欢」。 */
     val isFavorites: Boolean = false,
+    /**
+     * 原作者歌单的 gid（`list_create_gid`）。
+     *
+     * 收藏别人的歌单时，`global_collection_id` 是**自己收藏副本**的 gid，
+     * 曲目可能因下架而比原歌单少（实测「好听的沉浸式日文歌」副本 16 首、
+     * 原歌单 18 首）。取曲目时收藏歌单应优先用本字段。
+     */
+    val listCreateGid: String = "",
 ) {
     /** 是否自建。 */
     val isOwn: Boolean get() = type == 0
+
+    /** 取曲目时实际该用的 gid（见 [pickPlaylistGid]）。 */
+    val fetchGid: String get() = pickPlaylistGid(type, id, listCreateGid)
 
     /**
      * 取指定尺寸的封面地址。
@@ -238,6 +249,37 @@ data class Playlist(
         return if (url.contains("{size}")) url.replace("{size}", px.toString()) else url
     }
 }
+
+/**
+ * 是否为「收藏的别人的歌单」。
+ *
+ * `/user/playlist` 的 `type`：0=自建 / 1=收藏。
+ * 只有收藏歌单才存在「副本 gid」与「原作者 gid」不一致的问题。
+ */
+fun isCollectedPlaylist(type: Int): Boolean = type == 1
+
+/**
+ * 选一个用来拉曲目的 gid（用户反馈 #1 的根因）。
+ *
+ * ## 两个 gid 的来历
+ *
+ * 收藏别人的歌单时，酷哥会给你一份**收藏副本**：
+ *
+ * | 字段 | 含义 | 曲目数 |
+ * |---|---|---|
+ * | `global_collection_id` | 自己收藏副本的 gid | 可能少（下架曲目不进副本） |
+ * | `list_create_gid` | 原作者歌单的 gid | 完整 |
+ *
+ * 实测「好听的沉浸式日文歌」：副本 16 首、原歌单 18 首。
+ * MoeKoe / 官方酷狗 Lite 能拿全，就是因为对收藏歌单用 `list_create_gid`。
+ *
+ * 规则：
+ * - 收藏歌单（type=1）且有 `listCreateGid` → 用原作者 gid
+ * - 其余（自建歌单、缺字段）→ 用 `globalCollectionId`
+ */
+fun pickPlaylistGid(type: Int, globalCollectionId: String, listCreateGid: String): String =
+    if (isCollectedPlaylist(type) && listCreateGid.isNotBlank()) listCreateGid
+    else globalCollectionId
 
 /** 榜单。 */
 data class Rank(

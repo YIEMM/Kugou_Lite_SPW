@@ -578,13 +578,20 @@ object KugouApi {
         val info = JsonLite.dig(json, "data", "info")
         val list = JsonLite.asArray(info).orEmpty().mapNotNull { item ->
             val obj = JsonLite.asObject(item) ?: return@mapNotNull null
-            // **必须优先取 global_collection_id**：歌单内的歌曲接口
-            // （`/playlist/track/all`）只认它，传 listid 会返回空。
-            val id = firstString(obj, "global_collection_id", "specialid", "listid", "listId")
+            // ⚠️ 收藏歌单有两个 gid，别无条件取 global_collection_id（用户反馈 #1）。
+            //
+            // - `global_collection_id`：自己收藏副本的 gid，下架曲目不会进副本
+            //   （实测「好听的沉浸式日文歌」副本只有 16 首，列表声明 18 首）
+            // - `list_create_gid`：原作者歌单的 gid，曲目完整（同例 18 首）
+            //
+            // MoeKoe / 官方酷狗 Lite 能拿全，就是因为收藏歌单优先用后者。
+            // 自建歌单两者相同，用 global_collection_id 即可。
+            val globalGid = firstString(obj, "global_collection_id", "specialid", "listid", "listId")
                 ?: return@mapNotNull null
-
+            val listCreateGid = firstString(obj, "list_create_gid").orEmpty()
             val listId = firstString(obj, "listid", "listId").orEmpty()
             val type = firstInt(obj, "type")
+            val id = pickPlaylistGid(type, globalGid, listCreateGid)
             // 封面：`pic` 是主字段（含 {size} 占位）。
             // 「我喜欢」这类系统歌单没有 pic，退回创建者头像。
             val cover = firstString(obj, "pic", "img", "cover")
@@ -599,6 +606,7 @@ object KugouApi {
                 description = firstString(obj, "intro", "description"),
                 listId = listId,
                 type = type,
+                listCreateGid = listCreateGid,
                 // 「我喜欢」= 固定 listid=2 的自建歌单（按 id 判断，不按名字：
                 // 用户可能给歌单改名，但 listid 不会变）
                 isFavorites = listId == MY_FAVORITES_LIST_ID && type == 0,
@@ -620,11 +628,15 @@ object KugouApi {
     /**
      * 歌单内的歌曲。
      *
-     * ## 参数：必须传 `global_collection_id`，不能用 listid
+     * ## 参数：必须传 gid，不能用 listid
      *
      * `/user/playlist` 返回的 `listid`（如 `1`）**不能**直接用于本接口 ——
-     * 实测传 `listid=1` 返回 `status:0`（无数据）。必须用
-     * `global_collection_id`（形如 `collection_3_1072630322_1_0`）。
+     * 实测传 `listid=1` 返回 `status:0`（无数据）。必须用 gid
+     * （形如 `collection_3_1072630322_1_0`）。
+     *
+     * 对**收藏歌单**，调用方应传 `list_create_gid`（原作者 gid）而非
+     * `global_collection_id`（收藏副本 gid）—— 后者曲目可能不全，
+     * 详见 [pickPlaylistGid]。
      *
      * ## 返回结构
      *
