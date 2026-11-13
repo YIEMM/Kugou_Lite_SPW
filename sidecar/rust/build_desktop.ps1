@@ -1,4 +1,4 @@
-﻿#Requires -Version 5.1
+#Requires -Version 5.1
 <#
 .SYNOPSIS
   构建 Windows 桌面版 kugou_server（kugou_server.dll）。
@@ -33,9 +33,33 @@ $HostAr  = 'C:\Program Files (x86)\Dev-Cpp\MinGW64\bin\ar.exe'
 $VsWhere = 'C:\Program Files (x86)\Microsoft Visual Studio\Installer\vswhere.exe'
 
 $env:Path = "$CargoBin;$env:Path"
+
+# 本机把 rustup 装到了 D:\Appdata（C 盘剩余空间不足），不在默认的
+# %USERPROFILE%\.cargo。这里按优先级找 rustup：
+#   1. 已注册的 CARGO_HOME（用户级环境变量）
+#   2. 同目录下的 rust-env.ps1（记录本机安装位置）
+#   3. D:\Appdata\cargo\bin
+#   4. 默认 %USERPROFILE%\.cargo\bin
+$RustEnvFile = Join-Path $PSScriptRoot 'rust-env.ps1'
+if (Test-Path $RustEnvFile) { . $RustEnvFile }
+foreach ($candidate in @(
+    $env:CARGO_HOME,
+    'D:\Appdata\cargo',
+    (Join-Path $env:USERPROFILE '.cargo')
+)) {
+    if ($candidate -and (Test-Path (Join-Path $candidate 'bin\rustup.exe'))) {
+        $CargoBin = Join-Path $candidate 'bin'
+        $env:Path = "$CargoBin;$env:Path"
+        if (-not $env:CARGO_HOME) { $env:CARGO_HOME = $candidate }
+        break
+    }
+}
+
 # 唯一硬依赖是 rustup：所有 cargo 调用都经 `rustup run <toolchain> cargo`，
 # 不要求 .cargo\bin 里存在 cargo.exe shim（部分安装方式下它并不存在）。
-if (-not (Get-Command rustup -ErrorAction SilentlyContinue)) { throw '未找到 rustup，请先安装 rustup' }
+if (-not (Get-Command rustup -ErrorAction SilentlyContinue)) {
+    throw "未找到 rustup（已尝试 CARGO_HOME=$env:CARGO_HOME、D:\Appdata\cargo、~/.cargo）。请先安装 rustup，或检查 rust-env.ps1"
+}
 # 输出形如 "stable-x86_64-pc-windows-msvc (default)"，只取工具链名那一段。
 $Installed = @(& rustup toolchain list 2>$null |
     ForEach-Object { ($_ -split '\s+')[0] } | Where-Object { $_ })

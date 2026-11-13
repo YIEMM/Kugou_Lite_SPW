@@ -1079,6 +1079,13 @@ pub fn handle_track_all(q: &Value, ctx: &Ctx) -> Result<ModuleResponse, ModuleRe
 }
 
 /// playlist_track_all_new.js → /playlist/track/all/new（获取自己歌单所有歌曲）。
+///
+/// ## 为什么用 `_v3`（用户反馈「封面取不到」）
+///
+/// KuGouMusicApi 的 `playlist_track_all_new.js` 注释写着：
+/// 「获取歌单所有歌曲（v3 已是最新版本，App 云歌单当前使用该端点）」，
+/// 端点用 `/v4/get_list_all_file_v3`。我们原来用 `/v4/get_list_all_file`（旧版），
+/// 实测部分曲目返回空 `cover`（122 首里 6 首），v3 会带上完整封面信息。
 pub fn handle_track_all_new(q: &Value, ctx: &Ctx) -> Result<ModuleResponse, ModuleResponse> {
     let userid = cookie_or_param_str(q, "userid", "0");
     let token = cookie_or_param_str(q, "token", "0");
@@ -1098,7 +1105,7 @@ pub fn handle_track_all_new(q: &Value, ctx: &Ctx) -> Result<ModuleResponse, Modu
     dm.insert("token".to_string(), json!(token));
     dm.insert("page".to_string(), json!(q_num(q, "page", 1)));
     forward(
-        q, ctx, "post", "/v4/get_list_all_file", None, None,
+        q, ctx, "post", "/v4/get_list_all_file_v3", None, None,
         Some(Value::Object(dm)), "android", &[("x-router", "cloudlist.service.kugou.com")], false, false,
     )
 }
