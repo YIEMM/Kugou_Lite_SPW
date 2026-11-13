@@ -59,3 +59,4 @@ src/main/resources/native/*.dll
 .superpowers/
 commit-msg.txt
 msg.txt
+ci.txt
