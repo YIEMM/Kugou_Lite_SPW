@@ -340,57 +340,19 @@ object KugouApi {
      * `LyricsCell(startTime=...)`）本身就是逐字结构，所以喂 KRC 才能
      * 逐字高亮；喂 LRC 只能整行高亮。
      *
-     * ## 没有译文时按歌名找其它版本（用户反馈）
+     * ## 不做「同名其它版本」回退（用户明确要求撤回）
      *
-     * 「みむかゥわナイストライ」的云歌单 hash 搜到的歌词候选只有
-     * `type=0`（罗马音），而同名官方版本的候选有 `type=1`（中文译文）。
-     * MoeKoe 能显示译文，是因为它播放的是官方版本那条资源。
-     *
-     * 所以：本 hash 的 KRC 没有译文时，用歌名搜索同名其它版本，
-     * 挑一个带译文的 KRC。仅在明确找不到译文时才做，避免多余请求。
+     * 曾试过：本 hash 的 KRC 无译文时，用歌名搜同名其它版本挑带译文的。
+     * 实测同名版本质量极差（翻唱、DJ 版、断句完全不同，甚至串到别的歌），
+     * 译文对不上原曲，比没有译文更糟。用户要求退回，故保持原样：
+     * **只播这首就用这首的歌词**，没有译文就不显示（或显示罗马音兜底）。
      */
     fun lyricByHash(hash: String, title: String = "", singer: String = ""): String? {
         val best = searchLyric(hash).firstOrNull() ?: return null
-        val own = lyric(best, fmt = "krc")?.takeIf { it.isNotBlank() }
-        if (own != null) {
-            if (KrcLyrics.hasMeaningfulTranslation(own)) return own
-            // 本曲无译文：尝试同名其它版本
-            val alt = lyricFromOtherVersion(title, singer, hash)
-            if (alt != null) return alt
-            return own
-        }
+        // 先试 KRC（逐字）
+        lyric(best, fmt = "krc")?.takeIf { it.isNotBlank() }?.let { return it }
+        // 退回 LRC（逐行）
         return lyric(best, fmt = "lrc")
-    }
-
-    /**
-     * 用歌名搜索同名其它版本，挑一个 `[language:]` 里带 `type=1` 译文的 KRC。
-     *
-     * 只在前 5 条搜索结果里试，且跳过与原 hash 相同的版本。
-     */
-    private fun lyricFromOtherVersion(title: String, singer: String, excludeHash: String): String? {
-        if (title.isBlank()) return null
-        val result = runCatching { search(title, page = 1, pageSize = 8) }.getOrNull() ?: return null
-        val others = result.songs.filter {
-            it.hash.isNotBlank() && !it.hash.equals(excludeHash, ignoreCase = true)
-        }
-        // 歌手一致的版本优先（不同翻唱版的译文/断句可能不同，避免串歌词）
-        val ordered = if (singer.isNotBlank()) {
-            others.sortedByDescending { s ->
-                s.singer.equals(singer, ignoreCase = true) ||
-                    s.singer.contains(singer) || singer.contains(s.singer)
-            }
-        } else {
-            others
-        }
-        for (candidate in ordered.take(5)) {
-            val c = searchLyric(candidate.hash).firstOrNull() ?: continue
-            val krc = lyric(c, fmt = "krc") ?: continue
-            if (KrcLyrics.hasMeaningfulTranslation(krc)) {
-                Diag.info(TAG, "歌词译文回退「$title」→ ${candidate.singer} ${candidate.hash.take(8)}")
-                return krc
-            }
-        }
-        return null
     }
 
     /**
