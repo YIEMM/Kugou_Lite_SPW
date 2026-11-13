@@ -97,6 +97,9 @@ fun SearchPage(onPick: (Song, List<Song>, Int) -> Unit) {
     LaunchedEffect(Unit) { hotState.load { SearchApi.hotWords() } }
     // 输入建议：300ms 防抖；已提交的同词不再拉建议
     LaunchedEffect(keyword) {
+        // 关键词一变就作废旧建议（BUG-53）：否则 300ms 防抖期间界面上还是
+        // 上一个词的建议，用户点了会搜到他没输入的东西。
+        suggestState.reset()
         kotlinx.coroutines.delay(300)
         if (keyword.isNotBlank() && keyword != submitted) {
             suggestState.load { SearchApi.suggest(keyword) }

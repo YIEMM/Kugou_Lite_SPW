@@ -106,17 +106,39 @@ class MutableAsyncState<T> {
     var value: Async<T> by mutableStateOf<Async<T>>(Async.Idle)
         internal set
 
+    /**
+     * 请求代号。
+     *
+     * ## 为什么必须有（BUG-13）
+     *
+     * 早期实现是「谁后完成谁写回」：用户手快切歌单 / 切 Tab / 改搜索词时，
+     * **先发后到**的旧请求会把新结果覆盖掉，界面上出现「点的是 A，显示的是 B」。
+     *
+     * 现在每次 [load] 领一个自增代号，回调写回前比对代号 ——
+     * 只有仍是最新的请求才能落地。`reset()` 也自增，让在飞的请求全部作废。
+     *
+     * 用 `AtomicInteger` 而不是普通 `var`：回调跑在 `ApiExec` 的后台线程上，
+     * 与 UI 线程的 [load] 存在真实的数据竞争。
+     */
+    private val generation = java.util.concurrent.atomic.AtomicInteger(0)
+
     fun load(block: () -> T) {
+        // 先自增再置 Loading：这样先前那次请求的回调即使马上到达也会被判为过期。
+        val mine = generation.incrementAndGet()
         value = Async.Loading
         ApiExec.run({ result ->
-            value = result.fold(
-                onSuccess = { Async.Success(it) },
-                onFailure = { Async.Failure(it.message ?: "请求失败") },
-            )
+            if (generation.get() == mine) {
+                value = result.fold(
+                    onSuccess = { Async.Success(it) },
+                    onFailure = { Async.Failure(it.message ?: "请求失败") },
+                )
+            }
         }, block)
     }
 
     fun reset() {
+        // 让在飞的请求全部作废，避免 reset 之后又被旧结果填满（BUG-53 的同类问题）。
+        generation.incrementAndGet()
         value = Async.Idle
     }
 }

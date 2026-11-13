@@ -184,7 +184,7 @@ class BugProbeTest {
     // ---------------------------------------------------------------- probe 8
 
     @Test
-    fun `probe08 旧的异步结果会覆盖新的结果`() {
+    fun `probe08 旧请求不得覆盖新结果（BUG-13 已修，转为回归断言）`() {
         val state = MutableAsyncState<String>()
         val oldStarted = CountDownLatch(1)
         val releaseOld = CountDownLatch(1)
@@ -200,10 +200,10 @@ class BugProbeTest {
         state.load { "NEW" }
         awaitValue(state) { it is Async.Success && it.value == "NEW" }
 
-        // 旧请求随后完成，直接把新结果覆盖掉 —— 没有任何 request-id / generation 防护
+        // 旧请求随后完成，必须被代号机制丢弃
         releaseOld.countDown()
-        awaitValue(state) { it is Async.Success && it.value == "OLD" }
-        assertEquals("OLD", (state.value as Async.Success).value)
+        Thread.sleep(300)
+        assertEquals("NEW", (state.value as Async.Success).value, "旧结果覆盖了新结果")
     }
 
     private fun awaitValue(state: MutableAsyncState<String>, predicate: (Async<String>) -> Boolean) {
