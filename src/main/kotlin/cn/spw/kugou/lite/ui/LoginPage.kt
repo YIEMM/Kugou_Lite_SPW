@@ -22,6 +22,7 @@ import cn.spw.kugou.lite.diag.Diag
 import cn.spw.kugou.lite.sidecar.ApiExec
 import cn.spw.kugou.lite.sidecar.AuthStore
 import cn.spw.kugou.lite.sidecar.KugouApi
+import cn.spw.kugou.lite.sidecar.SidecarManager
 
 /**
  * 扫码登录页。
@@ -71,6 +72,10 @@ fun LoginPage() {
             }
             r.onFailure { statusText = "获取二维码失败：${it.message}" }
         }) {
+            // 边车是懒启动的（发现页首次请求时才拉起）。登录页可能是宿主启动后
+            // 访问的第一个页面（token 过期场景），必须自负边车启动，
+            // 否则 qrKey 永远撞上「边车未就绪」，二维码永远出不来。
+            SidecarManager.ensureStarted() ?: return@run null
             val result = KugouApi.qrKey() ?: return@run null
             result.key to result.imageBase64.substringAfter("base64,", "")
         }

@@ -130,6 +130,33 @@ fun SettingsPage() {
                     modifier = Modifier.padding(top = 2.dp),
                 )
             }
+
+            // -------------------------------------------------- 登录 / 重新登录
+            //
+            // ## 为什么登录后也要有这个入口
+            //
+            // token 会过期（几小时后 /user/playlist 返回 20017）。过期后
+            // AuthStore 里仍留着旧 token（isLoggedIn=true），唯一的重新登录
+            // 入口却在发现页需要登录的区块里（要滚动才能看到），设置页反而
+            // 只有「退出登录」。用户被逼着先退出再找入口，路径不通顺。
+            //
+            // 登录页本身不依赖登录态（扫码成功会覆盖旧 token），所以这里
+            // 两种状态都放行：未登录显示「去登录」，已登录显示「重新扫码登录」。
+            Row(
+                Modifier
+                    .fillMaxWidth()
+                    .clickable {
+                        Diag.info("[settings] 前往登录页")
+                        PageNav.go(KugouLiteTab.Login)
+                    }
+                    .padding(horizontal = 16.dp, vertical = 12.dp),
+            ) {
+                Text3(
+                    text = if (AuthStore.isLoggedIn) "重新扫码登录" else "去登录",
+                    color = KugouTheme.colors.text,
+                )
+            }
+
             if (AuthStore.isLoggedIn) {
                 Row(
                     Modifier
