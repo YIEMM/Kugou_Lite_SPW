@@ -113,6 +113,9 @@ fun DetailPage() {
             "rank" -> songs.load { KugouApi.rankSongs(rankId) }
             "album" -> songs.load {
                 val p = KugouApi.albumSongPage(albumId, page = 1, pageSize = ALL_AT_ONCE_PAGE_SIZE)
+                // 接口失败必须显式报错：否则空列表会被渲染成「暂无歌曲」，
+                // 用户以为专辑真的没歌（BUG-03 同类问题）。
+                if (p.failed) error(LOAD_FAILED_MESSAGE)
                 serverTotal = p.total
                 firstPageRawCount = p.rawCount
                 droppedTotal = p.droppedCount
@@ -134,6 +137,8 @@ fun DetailPage() {
                     pageSize = ALL_AT_ONCE_PAGE_SIZE,
                     listId = PageNav.numericListId,
                 )
+                // 同上：网络失败 ≠ 空歌单。详见 LOAD_FAILED_MESSAGE 的注释。
+                if (p.failed) error(LOAD_FAILED_MESSAGE)
                 serverTotal = p.total
                 firstPageRawCount = p.rawCount
                 droppedTotal = p.droppedCount
@@ -546,6 +551,17 @@ private fun AlbumGridBlock(state: Async<List<AlbumBrief>>) {
 }
 
 /** 详情页专辑网格列数（内容区宽度稳定，固定三列）。 */
+/**
+ * 接口失败时的用户可见文案。
+ *
+ * **为什么不能沿用「该列表暂无歌曲」**：`KugouApi.get()` 网络失败返回 null，
+ * 早期被折成空页，于是网络一抖用户就看到「该列表暂无歌曲」——
+ * 会以为歌单被删了，而且没有任何重试提示（BUG-03）。
+ *
+ * 现在数据层用 `SongPage.failed` 把它区分开，UI 显示「加载失败」。
+ */
+private const val LOAD_FAILED_MESSAGE = "接口无响应，请检查网络后重试"
+
 private const val DETAIL_GRID_COLUMNS = 3
 
 /** 统一的外层卡片（保持 16dp 水平留白）。 */

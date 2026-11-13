@@ -412,11 +412,11 @@ object KugouApi {
         val json = get(
             "/album/songs",
             mapOf("id" to albumId, "page" to page.toString(), "pagesize" to pageSize.toString()),
-        ) ?: return SongPage(emptyList(), 0)
+        ) ?: return SongPage(emptyList(), 0, failed = true)
 
         val list = JsonLite.asArray(JsonLite.dig(json, "data", "songs"))
             ?: JsonLite.asArray(JsonLite.dig(json, "data"))
-            ?: return SongPage(emptyList(), 0)
+            ?: return SongPage(emptyList(), 0, failed = true)
 
         val songs = list.mapNotNull { parseSong(it) }
         val total = JsonLite.asInt(JsonLite.dig(json, "data", "total"))
@@ -768,6 +768,17 @@ object KugouApi {
         val rawCount: Int = songs.size,
         /** 被版权屏蔽/无效而丢弃的条目数（`shield=1` 或无取流键）。 */
         val droppedCount: Int = (rawCount - songs.size).coerceAtLeast(0),
+        /**
+         * 请求链路是否失败。
+         *
+         * **必须与「成功但空列表」区分开**（BUG-03）：`get()` 网络失败返回 null，
+         * 早期直接把它折成空页，UI 只能显示「该列表暂无歌曲」——
+         * 网络一抖用户就以为歌单被删了，而且没有重试入口。
+         *
+         * - `true`：无响应 / HTTP 非 200 / 响应体解析不出曲目数组
+         * - `false`：请求成功；此时空列表就是服务端确实没歌
+         */
+        val failed: Boolean = false,
     )
 
     fun playlistSongs(globalCollectionId: String, page: Int = 1, pageSize: Int = 50): List<Song> =
@@ -994,11 +1005,11 @@ object KugouApi {
                 "page" to page.toString(),
                 "pagesize" to pageSize.toString(),
             ),
-        ) ?: return SongPage(emptyList(), 0, 0)
+        ) ?: return SongPage(emptyList(), 0, 0, failed = true)
 
         val list = JsonLite.asArray(JsonLite.dig(json, "data", "songs"))
             ?: JsonLite.asArray(JsonLite.dig(json, "data", "info"))
-            ?: return SongPage(emptyList(), 0, 0)
+            ?: return SongPage(emptyList(), 0, 0, failed = true)
 
         val rawCount = list.size
         val songs = list.mapNotNull { parseSong(it) }

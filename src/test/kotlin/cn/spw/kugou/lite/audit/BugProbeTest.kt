@@ -277,7 +277,7 @@ class BugProbeTest {
     }
 
     @Test
-    fun `probe14 歌单接口网络失败被当成空列表，UI 无法区分到底`() {
+    fun `probe14 歌单接口失败必须可识别（BUG-03 已修，转为回归断言）`() {
         val server = HttpServer.create(InetSocketAddress("127.0.0.1", 0), 0)
         server.createContext("/playlist/track/all") { exchange ->
             val body = "{\"status\":0,\"error_code\":500}".toByteArray()
@@ -290,10 +290,9 @@ class BugProbeTest {
         field.set(SidecarManager, "http://127.0.0.1:${server.address.port}")
         try {
             val page = KugouApi.playlistSongPage("collection_3_1_2_0")
-            // 期望：失败应可被识别（null / 抛错）；实际：返回空页，UI 显示「该列表暂无歌曲」
             assertEquals(0, page.songs.size)
-            assertEquals(0, page.rawCount)
-            assertEquals(0, page.total)
+            // 期望：失败必须带 failed 标记，UI 才能显示「加载失败」而不是「暂无歌曲」
+            assertTrue(page.failed, "HTTP 500 必须标记 failed")
             assertNotNull(KugouApi.lastError)
         } finally {
             field.set(SidecarManager, null)
