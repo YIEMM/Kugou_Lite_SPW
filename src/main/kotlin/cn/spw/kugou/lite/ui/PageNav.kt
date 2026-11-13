@@ -258,6 +258,9 @@ enum class KugouLiteTab {
     /** 播放历史。 */
     History,
 
+    /** 签到日历（福利，参考 md3Music）。 */
+    Welfare,
+
     /** 发现页区块详情（完整列表）。 */
     DiscoverDetail,
 

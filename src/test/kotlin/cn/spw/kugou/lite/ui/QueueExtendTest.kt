@@ -32,16 +32,20 @@ class QueueExtendTest {
     }
 
     @Test
-    fun `服务端总数为0时不续拉`() {
-        // 元数据缺失（count=0）时无法判断，靠「本页是否拉满」兜底
+    fun `服务端总数为0时保守续拉直到空页`() {
+        // 总数未知：本页有数据就继续尝试（详见 PlaylistPagingTest 的完整规则）
         assertTrue(shouldExtendPlaylist(loadedCount = 50, pageSize = 50, serverTotal = 0))
-        assertFalse(shouldExtendPlaylist(loadedCount = 10, pageSize = 50, serverTotal = 0))
+        assertTrue(shouldExtendPlaylist(loadedCount = 10, pageSize = 50, serverTotal = 0))
     }
 
     @Test
-    fun `本页未拉满即视为到底`() {
-        // 返回 20 条 < pagesize 50 → 没有更多了
-        assertFalse(shouldExtendPlaylist(loadedCount = 20, pageSize = 50, serverTotal = 999))
+    fun `服务端少回条数时仍按总数判断`() {
+        // ⚠️ 这条曾固化过 bug：早期用「本页是否拉满」判定，
+        // 而服务端请求 50 常只回 48，导致第 49 首之后永远拉不到。
+        // 正确行为：以总数 999 为准 → 48 < 999 → 继续拉。
+        assertTrue(shouldExtendPlaylist(loadedCount = 48, pageSize = 50, serverTotal = 999))
+        // 只有总数已知且已达上限才停
+        assertFalse(shouldExtendPlaylist(loadedCount = 48, pageSize = 50, serverTotal = 48))
     }
 
     // ------------------------------------------------------------ 私人 FM

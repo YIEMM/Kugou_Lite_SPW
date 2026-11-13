@@ -302,6 +302,36 @@ fun PlaylistPage() {
                         }
                     }
                 }
+
+                        // ------------------------------------------- 签到日历入口
+                        // 对应 md3「我的」页会员卡片左侧入口：一个独立的二级页，
+                        // 不在设置里堆表单（用户明确要求 MD3 那种形式）。
+                        val monthPrefix = java.time.LocalDate.now().let {
+                            "${it.year}-${it.monthValue.toString().padStart(2, '0')}"
+                        }
+                        val signedCount = cn.spw.kugou.lite.sidecar.WelfareApi
+                            .signedDays(AuthStore.userId.orEmpty())
+                            .count { it.startsWith(monthPrefix) }
+                        SaltCard(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp)) {
+                            Row(
+                                Modifier
+                                    .fillMaxWidth()
+                                    .clickable { PageNav.go(KugouLiteTab.Welfare) }
+                                    .padding(horizontal = 16.dp, vertical = 12.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                            ) {
+                                Column(Modifier.weight(1f)) {
+                                    Text3("签到日历", color = KugouTheme.colors.text)
+                                    Text3(
+                                        text = "本月已打卡 $signedCount 天 · 领畅听/概念版 VIP",
+                                        color = KugouTheme.colors.muted,
+                                        modifier = Modifier.padding(top = 2.dp),
+                                    )
+                                }
+                                Text3("›", color = KugouTheme.colors.faint)
+                            }
+                        }
+
             }
         }
     }

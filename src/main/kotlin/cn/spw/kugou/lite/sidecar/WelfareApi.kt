@@ -33,7 +33,9 @@ object WelfareApi {
     private const val TAG = "welfare"
     private const val FILE_NAME = "welfare.properties"
     private const val KEY_AUTO = "autoSignIn"
-    private const val KEY_SIGNED_PREFIX = "signed_"   // + userid → 日期
+    // tried = 今天已尝试过（防自动重复请求）；signed = 今天确实领到了（日历打勾）
+    private const val KEY_TRIED_PREFIX = "tried_"
+    private const val KEY_SIGNED_PREFIX = "signed_"
     private const val KEY_LAST_RESULT = "lastResult"
 
     private var file: File? = null
@@ -64,14 +66,14 @@ object WelfareApi {
 
     /** 今天是否已经尝试过签到（按账号隔离）。 */
     fun alreadyTriedToday(userId: String, day: String): Boolean =
-        props().getProperty("${KEY_SIGNED_PREFIX}${userId}_$day") == "1"
+        props().getProperty("${KEY_TRIED_PREFIX}${userId}_$day") == "1"
 
     /** 标记今天已尝试（无论成败，避免同一天反复打风控接口）。 */
     fun markTriedToday(userId: String, day: String) {
         val p = props()
-        p.setProperty("${KEY_SIGNED_PREFIX}${userId}_$day", "1")
+        p.setProperty("${KEY_TRIED_PREFIX}${userId}_$day", "1")
         // 只保留最近 40 天的记录，避免文件无限增长
-        val keys = p.stringPropertyNames().filter { it.startsWith(KEY_SIGNED_PREFIX) }.sorted()
+        val keys = p.stringPropertyNames().filter { it.startsWith(KEY_TRIED_PREFIX) }.sorted()
         if (keys.size > 40) keys.take(keys.size - 40).forEach { p.remove(it) }
         save(p)
     }
@@ -130,13 +132,64 @@ object WelfareApi {
         }
     }
 
+    /**
+     * 听歌上报领 VIP（md3 的「听歌领取」按钮）。
+     *
+     * 端点 `/youth/listen/song`，Rust 里对应 youth.rs 的 `handle_listen_song`。
+     * `130012` = 今日已领取，视为成功。
+     */
+    fun claimListenSong(): Pair<Boolean, String> {
+        val json = KugouApi.postRaw("/youth/listen/song", emptyMap())
+            ?: return false to "听歌领取请求无响应"
+        val code = JsonLite.asInt(JsonLite.dig(json, "error_code"))
+        val status = JsonLite.asInt(JsonLite.dig(json, "status"))
+        Diag.info(TAG, "听歌领取 status=$status code=$code")
+        return when {
+            status == 1 -> true to "听歌领取成功"
+            code == 130012 -> true to "今日已领取"
+            else -> false to welfareMessage(code)
+        }
+    }
+
+    /**
+     * 本地已签日期集合（yyyy-MM-dd）。
+     *
+     * 服务端 `/youth/month/vip/record` 在部分账号返回 20002（风控），
+     * 所以日历以本地记录为准 —— 与 md3 的「本地兜底」一致。
+     */
+    fun signedDays(userId: String): Set<String> {
+        val prefix = "${KEY_SIGNED_PREFIX}${userId}_"
+        return props().stringPropertyNames()
+            .filter { it.startsWith(prefix) && props().getProperty(it) == "1" }
+            .map { it.removePrefix(prefix) }
+            .toSet()
+    }
+
+    /**
+     * 标记某天签到**成功**（日历打勾用）。
+     *
+     * 与 [markTriedToday] 区分：try 是「今天试过一次」（防重复请求），
+     * success 是「确实领到了」（打卡日历）。当前实现合并成一条记录：
+     * 签到成功时才写入打勾；失败只写 tried 不入 signedDays。
+     */
+    fun markSigned(userId: String, day: String) {
+        val p = props()
+        p.setProperty("${KEY_SIGNED_PREFIX}${userId}_$day", "1")
+        save(p)
+    }
+
     /** 完整签到：领畅听 → 升级概念版。第一步失败（非已领）就不做第二步。 */
     fun signIn(day: String): Pair<Boolean, String> {
         val (claimOk, claimMsg) = claimDayVip(day)
         if (!claimOk) return false to claimMsg
         val (upgradeOk, upgradeMsg) = upgradeDayVip()
-        return if (upgradeOk) true to "签到成功（概念版会员）"
-        else false to "畅听 VIP 已领取，但升级概念版失败：$upgradeMsg"
+        return if (upgradeOk) {
+            // 成功才在日历打勾；失败只算「已尝试」
+            markSigned(AuthStore.userId.orEmpty(), day)
+            true to "签到成功（概念版会员）"
+        } else {
+            false to "畅听 VIP 已领取，但升级概念版失败：$upgradeMsg"
+        }
     }
 
     // ------------------------------------------------------------ 存储

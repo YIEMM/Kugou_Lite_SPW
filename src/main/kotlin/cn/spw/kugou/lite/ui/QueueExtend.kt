@@ -19,28 +19,67 @@ internal const val PLAYLIST_PAGE_SIZE = 50
 internal const val FM_REFILL_THRESHOLD = 2
 
 /**
+ * 翻完第 [pageNo] 页后，是否还有下一页。
+ *
+ * ## 为什么需要「位置」而不是「条数」（用户反馈的严重 bug）
+ *
+ * 酷狗对**版权屏蔽**曲目会在列表里留占位对象（`{"fileid":95,"shield":1}`），
+ * 解析时被过滤。于是「请求 50 条 → 解析出 48 首」是常态。
+ *
+ * 若用解析后条数判断（48 < 50 → 以为到底），**第 49 首之后的歌永远拉不到**。
+ *
+ * 正确做法：`begin_idx` 是按**原始位置**分页的，所以只要
+ * 「已翻过的位置」（`pageNo × pageSize`）还小于服务端声明的总数，
+ * 就说明后面还有没翻到的位置 —— 被屏蔽的那几首仍占位置，不影响判断。
+ *
+ * @param pageNo 刚翻完的是第几页（从 1 开始）
+ * @param pageSize 每页请求大小
+ * @param rawCount 该页服务端返回的**原始**条数（含屏蔽占位）。0 = 服务端真没数据了
+ * @param serverTotal 服务端声明的总数；0 = 未知
+ */
+internal fun hasMoreAfterPage(
+    pageNo: Int,
+    pageSize: Int,
+    rawCount: Int,
+    serverTotal: Int,
+): Boolean {
+    if (pageNo <= 0 || pageSize <= 0) return false
+    // 服务端这页一条都没返回 → 真到底了
+    if (rawCount <= 0) return false
+    // 有明确总数：已翻过的位置覆盖到总数就算到底
+    if (serverTotal > 0) return pageNo * pageSize < serverTotal
+    // 总数未知：只要这页还有数据就继续（下一页为空时自然停）
+    return true
+}
+
+/**
+ * 是否还有下一页 —— **以服务端声明的总数为准**。
+ *
+ * 这个函数按「已解析条数」判断，适用于**没有屏蔽占位**的场景
+ * （如专辑/搜索结果）。歌单请用 [hasMoreAfterPage]。
+ */
+internal fun hasMorePages(loadedCount: Int, serverTotal: Int): Boolean {
+    if (loadedCount < 0) return false
+    if (serverTotal < 0) return false
+    // 本页什么都没拿到 → 到底了（防死循环）
+    if (loadedCount == 0) return false
+    // 有明确总数：以它为准
+    if (serverTotal > 0) return loadedCount < serverTotal
+    // 总数未知：本页有数据就保守地再试一页，直到拿到空页
+    return true
+}
+
+/**
  * 歌单详情是否还应该续拉下一页。
  *
  * @param loadedCount 当前已加载条数
- * @param pageSize 每页大小
+ * @param pageSize 每页大小（仅用于文档与日志，不参与判定 —— 服务端会少回）
  * @param serverTotal 服务端声明的总数（`/user/playlist` 的 count；0 = 未提供）
- *
- * 规则：
- * 1. 本页没拉满（`loadedCount % pageSize != 0`）→ 到底了
- * 2. 服务端给了总数且已够 → 到底了
- * 3. 否则还能拉
- *
- * 注意服务器**实际返回可能少于声明的 count**（下架/失效曲目不返回），
- * 所以不能只信 `serverTotal`，必须以「本页是否拉满」为主判据。
  */
 internal fun shouldExtendPlaylist(loadedCount: Int, pageSize: Int, serverTotal: Int): Boolean {
-    if (loadedCount <= 0) return false
     if (pageSize <= 0) return false
-    // 本页没拉满 → 服务端已经没有更多了
-    if (loadedCount % pageSize != 0) return false
-    // 服务端给了总数且已加载够 → 到底
-    if (serverTotal > 0 && loadedCount >= serverTotal) return false
-    return true
+    // 与详情页共用同一套判据，避免两处漂移
+    return hasMorePages(loadedCount, serverTotal)
 }
 
 /**

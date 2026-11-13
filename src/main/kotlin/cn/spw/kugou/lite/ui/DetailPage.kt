@@ -71,19 +71,37 @@ fun DetailPage() {
 
     val songs = rememberAsyncState<List<Song>>()
     val albums = rememberAsyncState<List<AlbumBrief>>()
-    // 分页：playlistSongs 默认 pagesize=50，超过要能继续加载（审查 Important #16）
+    // 分页：以服务端声明的总数为准判断是否还有下一页。
+    // ⚠️ 不能用「本页是否拉满」—— 酷狗对 pagesize 有内部上限，
+    // 请求 50 只回 48 是常态，那样判定会让第 49 首之后的歌永远拉不到
+    // （用户反馈「50 首的歌单只显示 48 首」）。
     var page by remember { mutableStateOf(1) }
     var allSongs by remember { mutableStateOf(ArrayList<Song>()) }
     var hasMore by remember { mutableStateOf(true) }
     var loadingMore by remember { mutableStateOf(false) }
+    /** 服务端声明的曲目总数（0 = 未知）。优先用它，其次用列表页带过来的 declaredCount。 */
+    var serverTotal by remember { mutableStateOf(0) }
+    /** 首页服务端返回的**原始**条数（含被版权屏蔽的占位项，用于分页判定）。 */
+    var firstPageRawCount by remember { mutableStateOf(0) }
+    /** 累计因版权屏蔽被丢弃的条目数（用于头部提示）。 */
+    var droppedTotal by remember { mutableStateOf(0) }
 
     LaunchedEffect(type, rankId, playlistId, sectionId, albumId) {
         page = 1
         allSongs = ArrayList()
         hasMore = true
+        serverTotal = 0
+        firstPageRawCount = 0
+        droppedTotal = 0
         when (type) {
             "rank" -> songs.load { KugouApi.rankSongs(rankId) }
-            "album" -> songs.load { KugouApi.albumSongs(albumId) }
+            "album" -> songs.load {
+                val p = KugouApi.albumSongPage(albumId, page = 1)
+                serverTotal = p.total
+                firstPageRawCount = p.rawCount
+                droppedTotal = p.droppedCount
+                p.songs
+            }
             "daily" -> songs.load { runCatching { DiscoverApi.dailyRecommend() }.getOrDefault(emptyList()) }
             "discover" -> when (sectionId) {
                 "daily" -> songs.load { runCatching { DiscoverApi.dailyRecommend() }.getOrDefault(emptyList()) }
@@ -93,15 +111,33 @@ fun DetailPage() {
                 else -> songs.load { emptyList() }
             }
             // playlist / square 同源：都用 global_collection_id 取曲目
-            else -> songs.load { KugouApi.playlistSongs(playlistId, page = 1) }
+            else -> songs.load {
+                val p = KugouApi.playlistSongPage(playlistId, page = 1)
+                serverTotal = p.total
+                firstPageRawCount = p.rawCount
+                droppedTotal = p.droppedCount
+                p.songs
+            }
         }
     }
-    // 首页结果回填 + 判断是否还有下一页（返回满 50 首才认为可能有更多）
+    // 首页结果回填 + 判定是否还有下一页
     LaunchedEffect(songs.value) {
         val s = songs.value
         if (s is Async.Success) {
             allSongs = ArrayList(s.value)
-            hasMore = s.value.size >= PLAYLIST_PAGE_SIZE
+            val total = if (serverTotal > 0) serverTotal else declaredCount
+            hasMore = when (type) {
+                // 歌单有屏蔽占位：按「翻过的位置」判断
+                "playlist", "square" -> hasMoreAfterPage(
+                    pageNo = 1,
+                    pageSize = PLAYLIST_PAGE_SIZE,
+                    rawCount = firstPageRawCount,
+                    serverTotal = total,
+                )
+                // 专辑没有屏蔽占位问题，按已解析条数判断
+                "album" -> hasMorePages(s.value.size, total)
+                else -> false
+            }
         }
     }
 
@@ -113,31 +149,57 @@ fun DetailPage() {
      */
     fun requestNextPage() {
         if (loadingMore || !hasMore) return
-        if (type != "playlist" && type != "square") return
+        if (type != "playlist" && type != "square" && type != "album") return
         loadingMore = true
         val next = page + 1
         cn.spw.kugou.lite.sidecar.ApiExec.run(onResult = { res ->
-            val more = res.getOrNull().orEmpty()
+            val pageData = res.getOrNull()
+            val more = pageData?.songs.orEmpty()
             page = next
-            if (more.isNotEmpty()) {
-                val merged = ArrayList<Song>(allSongs.size + more.size).apply {
-                    addAll(allSongs); addAll(more)
-                }
+            // ⚠️ 总数只在**第 1 页**可信：实测第 2 页的 list_info.count 会变成 1
+            // （服务端只对首页返回准确总数）。所以这里只在「还没有可信总数」时采纳，
+            // 绝不每页覆盖 —— 否则第 2 页会把 122 覆盖成 1，分页当场停住。
+            if (serverTotal <= 0 && pageData != null && pageData.total > 0) {
+                serverTotal = pageData.total
+            }
+            if (pageData != null) droppedTotal += pageData.droppedCount
+            // 去重：服务端在某些边界会重复返回上一页末尾的曲目，按 hash/albumAudioId 过滤
+            val existingKeys = allSongs.map { s -> s.hash.ifBlank { s.albumAudioId } }.toHashSet()
+            val fresh = more.filter { s ->
+                val key = s.hash.ifBlank { s.albumAudioId }
+                key.isNotBlank() && existingKeys.add(key)
+            }
+            val merged = ArrayList<Song>(allSongs.size + fresh.size).apply {
+                addAll(allSongs); addAll(fresh)
+            }
+            if (fresh.isNotEmpty()) {
                 allSongs = merged
                 // 关键：把新歌同步进宿主的播放队列，否则自动续播时新歌没路径
                 runCatching {
-                    cn.spw.kugou.lite.host.TrackWatcher.appendToQueue(more)
+                    cn.spw.kugou.lite.host.TrackWatcher.appendToQueue(fresh)
                     cn.spw.kugou.lite.host.PlaybackBridge.appendToQueue(
                         allSongs = merged,
                         currentTrackId = currentPlayingTrackId(),
                         resolveStream = { s -> KugouApi.streamUrl(s) },
                     )
                 }.onFailure { Diag.warn("[detail] 追加队列失败：${it.message}") }
+            } else {
+                allSongs = merged
             }
-            hasMore = more.size >= PLAYLIST_PAGE_SIZE
+            // 判据（三件事分开，别混）：
+            // - 「这页有没有数据」用**原始条数**（含被屏蔽占位，否则会被误判为到底）
+            // - 「还有没有下一页」用**服务端声明总数** + 已翻页覆盖的位置
+            val rawCount = pageData?.rawCount ?: more.size
+            val total = if (serverTotal > 0) serverTotal else declaredCount
+            hasMore = hasMoreAfterPage(
+                pageNo = next,
+                pageSize = PLAYLIST_PAGE_SIZE,
+                rawCount = rawCount,
+                serverTotal = total,
+            )
             loadingMore = false
-            Diag.info("[detail] 加载第 $next 页：${more.size} 首（共 ${allSongs.size} 首）")
-        }) { KugouApi.playlistSongs(playlistId, page = next) }
+            Diag.info("[detail] 加载第 $next 页：${more.size} 首（累计 ${allSongs.size}，总数 $total，还有更多=$hasMore）")
+        }) { if (type == "album") KugouApi.albumSongPage(albumId, page = next) else KugouApi.playlistSongPage(playlistId, page = next) }
     }
 
     SaltScreen(title = title, onBackClick = { PageNav.backHome() }) {
@@ -152,7 +214,7 @@ fun DetailPage() {
                 PageHero(
                     coverUrl = heroCover,
                     title = title,
-                    meta = heroMeta(type, list.size, albumList.size, declaredCount),
+                    meta = heroMeta(type, list.size, albumList.size, declaredCount, droppedTotal),
                 ) {
                     if (list.isNotEmpty()) {
                         ActionChip("▶ 播放全部") { playSongsFromQueue(list, 0) }
@@ -179,7 +241,7 @@ fun DetailPage() {
                             },
                         )
                         // 手动「加载更多」（与自动续拉共用同一个 requestNextPage）
-                        if (hasMore && (type == "playlist" || type == "square")) {
+                        if (hasMore && (type == "playlist" || type == "square" || type == "album")) {
                             Row(
                                 Modifier.fillMaxWidth().padding(vertical = 12.dp),
                                 horizontalArrangement = Arrangement.Center,
@@ -221,10 +283,17 @@ private fun defaultTitle(type: String): String = when (type) {
 /**
  * 头部元信息文案。
  *
- * @param declared 列表页声明的曲目数（0 = 未知）。仅在确实少于声明数时
- *        追加提示——这是兜底，正常收藏歌单走 `list_create_gid` 后应能拿全。
+ * @param declared 列表页声明的曲目数（0 = 未知）
+ * @param dropped 已被丢弃的条目数（版权屏蔽占位 `{"fileid":x,"shield":1}`，
+ *        只有 fileid 没有任何歌曲信息，无法显示成有效行）
  */
-private fun heroMeta(type: String, songCount: Int, albumCount: Int, declared: Int = 0): String {
+private fun heroMeta(
+    type: String,
+    songCount: Int,
+    albumCount: Int,
+    declared: Int = 0,
+    dropped: Int = 0,
+): String {
     val base = when (type) {
         "album" -> if (songCount > 0) "专辑 · $songCount 首" else "专辑"
         "rank" -> if (songCount > 0) "榜单 · $songCount 首" else "榜单"
@@ -232,7 +301,10 @@ private fun heroMeta(type: String, songCount: Int, albumCount: Int, declared: In
         "discover" -> if (albumCount > 0) "新碟 · $albumCount 张" else if (songCount > 0) "$songCount 首" else "发现"
         else -> if (songCount > 0) "歌单 · $songCount 首" else "歌单"
     }
-    return if (declared > songCount && songCount > 0) {
+    // 有版权受限曲目就如实说明，避免用户以为「歌单少了歌」
+    return if (dropped > 0) {
+        "$base（另有 $dropped 首因版权限制不可播放）"
+    } else if (declared > songCount && songCount > 0) {
         "$base（声明 $declared 首，${declared - songCount} 首暂不可用）"
     } else {
         base

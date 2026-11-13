@@ -312,20 +312,25 @@ object KugouApi {
      * `data.songs` 是数组，字段风格与歌手接口类似：
      * `songname` / `author_name` / `hash` / `album_id` / `duration`。
      */
-    fun albumSongs(albumId: String, page: Int = 1, pageSize: Int = 50): List<Song> {
-        if (albumId.isBlank()) return emptyList()
+    fun albumSongs(albumId: String, page: Int = 1, pageSize: Int = 50): List<Song> =
+        albumSongPage(albumId, page, pageSize).songs
+
+    /** 同 [albumSongs]，额外返回服务端声明的曲目总数（分页判定用，别用「本页是否拉满」）。 */
+    fun albumSongPage(albumId: String, page: Int = 1, pageSize: Int = 50): SongPage {
+        if (albumId.isBlank()) return SongPage(emptyList(), 0)
         val json = get(
             "/album/songs",
             mapOf("id" to albumId, "page" to page.toString(), "pagesize" to pageSize.toString()),
-        ) ?: return emptyList()
+        ) ?: return SongPage(emptyList(), 0)
 
         val list = JsonLite.asArray(JsonLite.dig(json, "data", "songs"))
             ?: JsonLite.asArray(JsonLite.dig(json, "data"))
-            ?: return emptyList()
+            ?: return SongPage(emptyList(), 0)
 
         val songs = list.mapNotNull { parseSong(it) }
-        Diag.info(TAG, "专辑 $albumId → ${songs.size} 首")
-        return songs
+        val total = JsonLite.asInt(JsonLite.dig(json, "data", "total"))
+        Diag.info(TAG, "专辑 $albumId 第 $page 页 → ${songs.size} 首（总数 $total）")
+        return SongPage(songs, total)
     }
 
     // ---------------------------------------------------------------- 收藏
@@ -645,8 +650,41 @@ object KugouApi {
      * 注意歌名是 **`name`**，不是 `songname` 也不是 `filename` ——
      * [parseSong] 已覆盖。
      */
-    fun playlistSongs(globalCollectionId: String, page: Int = 1, pageSize: Int = 50): List<Song> {
-        if (globalCollectionId.isBlank()) return emptyList()
+    /**
+     * 歌单曲目页：曲目 + 服务端声明的总数 + **原始条数**。
+     *
+     * ## 为什么必须区分「解析后条数」和「原始条数」（用户反馈的严重 bug）
+     *
+     * 酷狗对**被版权屏蔽的曲目**会在列表里留一个占位对象：
+     *
+     * ```json
+     * {"fileid":95,"shield":1}
+     * ```
+     *
+     * 这类条目没有 `hash` / `album_audio_id`，[parseSong] 只能返回 null 被过滤。
+     * 于是「请求 pagesize=50，原始 50 条，解析出 48 首」是**常态**。
+     *
+     * 早期用解析后条数（48）判断「本页是否拉满 50」→ 判定为「已到底」→
+     * **第 49 首之后的歌全部拉不到**，用户看到「50 首的歌单只有 48 首」。
+     *
+     * 所以分页判定必须用 [total]（服务端声明的总数），
+     * 判断「这页还有没有数据」必须用 [rawCount]（原始条数）。
+     */
+    data class SongPage(
+        val songs: List<Song>,
+        val total: Int,
+        /** 服务端本页返回的**原始**条目数（含被屏蔽的占位项）。 */
+        val rawCount: Int = songs.size,
+        /** 被版权屏蔽/无效而丢弃的条目数（`shield=1` 或无取流键）。 */
+        val droppedCount: Int = (rawCount - songs.size).coerceAtLeast(0),
+    )
+
+    fun playlistSongs(globalCollectionId: String, page: Int = 1, pageSize: Int = 50): List<Song> =
+        playlistSongPage(globalCollectionId, page, pageSize).songs
+
+    /** 同 [playlistSongs]，但额外返回总数与原始条数（供分页判定）。 */
+    fun playlistSongPage(globalCollectionId: String, page: Int = 1, pageSize: Int = 50): SongPage {
+        if (globalCollectionId.isBlank()) return SongPage(emptyList(), 0, 0)
         val json = get(
             "/playlist/track/all",
             mapOf(
@@ -654,15 +692,29 @@ object KugouApi {
                 "page" to page.toString(),
                 "pagesize" to pageSize.toString(),
             ),
-        ) ?: return emptyList()
+        ) ?: return SongPage(emptyList(), 0, 0)
 
         val list = JsonLite.asArray(JsonLite.dig(json, "data", "songs"))
             ?: JsonLite.asArray(JsonLite.dig(json, "data", "info"))
-            ?: return emptyList()
+            ?: return SongPage(emptyList(), 0, 0)
 
+        val rawCount = list.size
         val songs = list.mapNotNull { parseSong(it) }
-        Diag.info(TAG, "歌单 $globalCollectionId → ${songs.size} 首")
-        return songs
+        // 总数：list_info.count 最准；退回 data.total
+        val total = firstInt(
+            JsonLite.asObject(JsonLite.dig(json, "data", "list_info")).orEmpty(),
+            "count",
+            "song_count",
+        ).takeIf { it > 0 }
+            ?: JsonLite.asInt(JsonLite.dig(json, "data", "total"))
+        val dropped = (rawCount - songs.size).coerceAtLeast(0)
+        Diag.info(
+            TAG,
+            "歌单 $globalCollectionId 第 $page 页 → 解析 ${songs.size} 首" +
+                if (dropped > 0) "（原始 $rawCount 条，${dropped} 条被屏蔽/无效已跳过）" else "（原始 $rawCount 条）" +
+                "，声明总数 $total",
+        )
+        return SongPage(songs, total, rawCount, dropped)
     }
 
     /**

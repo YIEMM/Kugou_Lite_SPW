@@ -113,6 +113,10 @@ private fun KugouLiteBody() {
             HistoryPage()
         }
 
+        KugouLiteTab.Welfare -> SubPage(title = "签到日历", onBack = { PageNav.backHome() }) {
+            WelfarePage()
+        }
+
         KugouLiteTab.Artist -> SubPage(
             title = PageNav.detailTitle.ifBlank { "歌手" },
             onBack = { PageNav.backHome() },
