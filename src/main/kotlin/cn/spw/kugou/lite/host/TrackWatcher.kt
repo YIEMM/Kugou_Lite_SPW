@@ -101,6 +101,12 @@ object TrackWatcher {
     private const val EXTEND_COOLDOWN_MS = 3_000L
 
     /**
+     * 补流失败的重试策略（BUG-05）：失败后延迟重试、限次数，
+     * 修复「补流失败 → 永远静音」。
+     */
+    private val streamRetry = StreamRetryPolicy()
+
+    /**
      * 登记当前播放队列，供切歌时查表。
      *
      * @param songs 队列里的全部歌曲（顺序与建队列时一致）
@@ -116,6 +122,8 @@ object TrackWatcher {
         queueMap = songs.associateBy { trackIdOf(it) }
         onNeedMore = needMore
         lastExtendAt = 0L
+        // 新队列 = 新上下文：旧队列的补流重试作废
+        streamRetry.onResolved()
         songs.getOrNull(startIndex)?.let { lastHandled.set(trackIdOf(it)) }
         Diag.info(TAG, "已登记队列 ${queueMap.size} 首（起始曲目已标记为已处理，续拉=${needMore != null}）")
     }
@@ -192,6 +200,7 @@ object TrackWatcher {
         runCatching { executor.shutdownNow() }
         lastHandled.set(null)
         queueMap = emptyMap()
+        streamRetry.onResolved()
         Diag.info(TAG, "切歌监听已停止")
     }
 
@@ -229,8 +238,25 @@ object TrackWatcher {
         val currentId = readCurrentTrackId() ?: return
         if (!currentId.startsWith(ID_PREFIX)) return
 
+        val nowMs = System.currentTimeMillis()
+
+        // ------------------------------------------------------ BUG-05 重试判定
+        // 补流失败后同一曲目仍是「当前曲目」，会被下面的 currentId == previous
+        // 早退拦下 → 永远静音。次数用尽先放弃并清理；冷却已过且未到上限则
+        // 放行本次轮询去重试（不受 30s 重复绑定冷却限制——那个冷却正是
+        // 静音的成因之一）。
+        if (streamRetry.exhausted(currentId, nowMs)) {
+            Diag.warn(TAG, "补流重试用尽，放弃「${queueMap[currentId]?.title ?: currentId}」（可手动切歌）")
+            streamRetry.onResolved()
+        }
+        val retrying = streamRetry.dueRetry(currentId, nowMs)
+        if (retrying) {
+            streamRetry.markAttempted()
+            Diag.info(TAG, "补流失败重试（第 ${streamRetry.attemptCount(currentId)} 次）「${queueMap[currentId]?.title ?: currentId}」")
+        }
+
         val previous = lastHandled.get()
-        if (currentId == previous) return
+        if (currentId == previous && !retrying) return
 
         lastHandled.set(currentId)
 
@@ -247,13 +273,15 @@ object TrackWatcher {
 
         // 防止「刚绑定完又被判定为切歌」的抖振：如果这首歌最近刚处理过
         // （例如用户快速连点、或宿主内部短暂回跳），30 秒内不重复绑定。
-        val now = System.currentTimeMillis()
-        val lastMs = lastBoundAt[currentId] ?: 0L
-        if (now - lastMs < REBIND_COOLDOWN_MS) {
-            Diag.info(TAG, "跳过重复绑定「${song.title}」（${now - lastMs}ms 内已处理）")
-            return
+        // 重试路径不受此限制。
+        if (!retrying) {
+            val lastMs = lastBoundAt[currentId] ?: 0L
+            if (nowMs - lastMs < REBIND_COOLDOWN_MS) {
+                Diag.info(TAG, "跳过重复绑定「${song.title}」（${nowMs - lastMs}ms 内已处理）")
+                return
+            }
         }
-        lastBoundAt[currentId] = now
+        lastBoundAt[currentId] = nowMs
 
         Diag.info(TAG, "检测到切歌：「${song.title}」")
 
@@ -263,6 +291,7 @@ object TrackWatcher {
         val cached = AudioCache.localFileOrNull(song)
         if (cached != null) {
             Diag.info(TAG, "命中本地缓存，跳过取流「${song.title}」")
+            streamRetry.onResolved()
             PlaybackBridge.rebindCurrent(song, FAKE_STREAM_FOR_LOCAL, cached)
             return
         }
@@ -270,8 +299,11 @@ object TrackWatcher {
         // 慢路径：没有本地文件，取流 + 下载
         val stream = KugouApi.streamUrl(song) ?: run {
             Diag.warn(TAG, "切歌补流失败：${KugouApi.lastError ?: "未知原因"}")
+            // BUG-05：登记延迟重试，而不是永久静音
+            streamRetry.onFailure(currentId, System.currentTimeMillis())
             return
         }
+        streamRetry.onResolved()
         // 先取歌词，再让 AudioCache 一并补齐（音频 + 封面 + 逐字歌词）
         val lrc = runCatching { KugouApi.lyricByHash(song.hash, song.title, song.singer) }.getOrNull()
         val local = AudioCache.ensureLocal(song, stream, lrc)
