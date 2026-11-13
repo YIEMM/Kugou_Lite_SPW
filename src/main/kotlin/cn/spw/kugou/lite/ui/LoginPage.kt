@@ -7,6 +7,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -77,39 +78,45 @@ fun LoginPage() {
 
     // 2) 轮询扫码状态
     //
-    // 不用 kotlinx.coroutines.delay：插件没有 coroutines 编译期依赖
-    // （宿主自带，但我们没声明 compileOnly，直接用会编译失败）。
-    // 这里把整个轮询循环丢进 ApiExec 的后台线程，用 Thread.sleep 控制节奏，
-    // 结果通过 MutableState 回传触发重组 —— 与 ApiExec 其他用法一致。
-    LaunchedEffect(key) {
-        if (key.isBlank()) return@LaunchedEffect
-
-        ApiExec.run({ r ->
-            r.onFailure { statusText = "登录轮询异常：${it.message}" }
-        }) {
-            var attempts = 0
-            while (attempts < 150) {
-                Thread.sleep(2_000)
-                attempts++
-
-                val s = KugouApi.qrCheck(key) ?: continue
-                when (s.status) {
-                    0 -> statusText = "二维码已过期，请点下方刷新"
-                    1 -> statusText = "请用酷狗 App 扫码"
-                    2 -> statusText = "已扫码，请在手机上确认"
-                    4 -> {
-                        val token = s.token
-                        val userId = s.userId
-                        if (token != null && userId != null) {
-                            AuthStore.save(token, userId, s.nickname)
-                            statusText = "登录成功：${s.nickname ?: userId}"
-                            Diag.info("[login] 登录成功 user=${s.nickname ?: userId}")
-                            return@run
-                        }
-                    }
-                }
+    // ## 为什么不再用 ApiExec（BUG-04）
+    //
+    // `ApiExec` 的线程池**只有 3 个线程**，而轮询要跑最多 5 分钟（2s × 150）。
+    // 早期把整个循环丢进那个池，且离开页面/刷新二维码都不会停：
+    // - 反复进出登录页 → 同时挂起多个轮询，其它接口全部排队；
+    // - 登录成功后旧循环还继续占着线程跑满 5 分钟。
+    //
+    // 现在跑在**自己的 daemon 线程**上，并由 [QrPollSession] 取消：
+    // 页面卸载（`onDispose`）或 key 变化（刷新二维码）时 `cancel()`，
+    // 循环在下一轮开头就退出，不再发请求。
+    val pollSession = remember { mutableStateOf<QrPollSession?>(null) }
+    DisposableEffect(Unit) {
+        onDispose {
+            // 真机验证观测点：BUG-04 的核心证据就是这一行——离开页面轮询必须停
+            pollSession.value?.let {
+                Diag.info("[login] 离开登录页：取消扫码轮询")
+                it.cancel()
             }
         }
+    }
+    LaunchedEffect(key) {
+        if (key.isBlank()) return@LaunchedEffect
+        // 刷新二维码 = 上一轮作废，避免两个循环同时在跑
+        pollSession.value?.cancel()
+        val session = QrPollSession()
+        pollSession.value = session
+        Diag.info("[login] 扫码轮询启动（独立 daemon 线程，不占 ApiExec 池）")
+        Thread({
+            runQrPoll(
+                key = key,
+                session = session,
+                onText = { statusText = it },
+                onSuccess = { token, userId, nickname ->
+                    AuthStore.save(token, userId, nickname)
+                    statusText = "登录成功：${nickname ?: userId}"
+                    Diag.info("[login] 登录成功 user=${nickname ?: userId}")
+                },
+            )
+        }, "kugou-login-poll").apply { isDaemon = true }.start()
     }
 
     Column(Modifier.fillMaxWidth().padding(bottom = 16.dp)) {
