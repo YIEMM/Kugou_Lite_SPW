@@ -136,6 +136,29 @@ object TrackWatcher {
     }
 
     /**
+     * 把不可播的曲目从登记的队列里移除。
+     *
+     * 与 [PlaybackBridge.removeFromQueue] 配套：那边改宿主队列，这边改
+     * 自己维护的 `queueList`/`queueMap`，否则下标会错位、`maybeRequestMore`
+     * 也会按旧长度判断。
+     *
+     * @return 移除后的剩余列表（供调用方重建宿主队列）
+     */
+    fun dropFromQueue(dead: List<Song>): List<Song> {
+        if (dead.isEmpty() || queueList.isEmpty()) return queueList
+        val deadIds = dead.map { trackIdOf(it) }.toHashSet()
+        val remaining = queueList.filter { trackIdOf(it) !in deadIds }
+        if (remaining.size == queueList.size) return queueList
+        queueList = remaining
+        queueMap = queueMap - deadIds
+        Diag.info(TAG, "队列登记已剔除 ${queueList.size} / ${remaining.size} 首")
+        return remaining
+    }
+
+    /** 当前登记的队列（只读副本）。 */
+    fun snapshot(): List<Song> = queueList
+
+    /**
      * 当前正在播放的曲目 id（以 `kugou-` 开头）。
      *
      * 供详情页在追加队列时定位「当前播到第几首」。读不到返回空串。

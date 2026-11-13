@@ -138,7 +138,53 @@ object KugouApi {
             if (lastNeedsLogin) return null // 登录问题，降级也没用
         }
 
+        // 两轮（常规 + 收藏页解锁）都失败：可能是云歌单里用户自己上传的
+        // 「未发布/已下架」音频。实测 `/song/url/new` 会回
+        // `Deny: the audio isn't publish.`，而搜索同名能拿到官方版本。
+        // 此时用「歌名 + 歌手」找一条可播的官方资源替换 hash 再取一次。
+        val fallback = resolveCloudAudioFallback(song)
+        if (fallback != null) {
+            Diag.info(TAG, "云歌单音频回退「${song.title}」${song.hash.take(8)} → ${fallback.hash.take(8)}")
+            val retry = streamUrlByQuery("hash=${fallback.hash}", "128", null)
+                ?: streamUrlByQuery("hash=${fallback.hash}", "128", COLLECT_PAGE_ID)
+            if (retry != null) {
+                lastError = null
+                return retry
+            }
+        }
+
         return null
+    }
+
+    /**
+     * 云歌单「未发布音频」→ 官方版本的回退解析。
+     *
+     * ## 触发条件
+     *
+     * 只在该曲**取流完全失败**时才走，且只对「复合歌名」（云歌单上传文件
+     * 的典型格式 `歌手 - 歌名.mp3`）做，避免给正常歌曲增加无谓的搜索请求。
+     *
+     * ## 为什么优先匹配歌手
+     *
+     * 同名歌曲很多（「我们的歌」有王力宏、刘大拿、陌粒、DJ 版…），
+     * 随便拿第一条会串歌 —— 正是用户反馈的「音频不对」。
+     *
+     * @return 找到的官方版本（含 hash）；没找到返回 null
+     */
+    private fun resolveCloudAudioFallback(song: Song): Song? {
+        val raw = song.fileName.ifBlank { song.title }
+        val title = normalizeSongTitle(raw)
+        val singer = singerFromComposite(raw)
+        // 只对复合歌名（含「 - 」）回退：普通歌曲名没必要多一次搜索
+        if (title.isBlank() || !raw.contains(" - ")) return null
+        val result = runCatching { search(title, page = 1, pageSize = 10) }.getOrNull() ?: return null
+        val hits = result.songs
+        if (hits.isEmpty()) return null
+        val candidates = hits.map { SearchHit(it.title, it.singer, it.hash) }
+        val picked = preferSameSinger(candidates, singer) ?: return null
+        if (!canFallback(song.hash, picked.hash)) return null
+        // 命中版本带封面，可用于补图
+        return hits.firstOrNull { it.hash == picked.hash }
     }
 
     /**
