@@ -51,17 +51,18 @@ class BugProbeTest {
     // ---------------------------------------------------------------- probe 1
 
     @Test
-    fun `probe01 AudioCache 只查 mp3 导致 FLAC 缓存永远不命中`() {
+    fun `probe01 FLAC 缓存必须被识别（BUG-07 已修，转为回归断言）`() {
         val base = Files.createTempDirectory("kugou-audit-cache").toFile()
         AudioCache.configure(base)
-        val cached = File(File(base, "audio-cache"), "H.flac")
+        // 新命名规则：<净化后的 key>-<请求音质>.<容器扩展名>
+        val cached = File(File(base, "audio-cache"), "H-128.flac")
         cached.parentFile.mkdirs()
         cached.writeBytes(ByteArray(32) { 7 })
         assertTrue(cached.isFile)
 
-        // 期望：FLAC 缓存应被识别；实际：只拼了 "<hash>.mp3"
-        assertNull(AudioCache.localFileOrNull(song("H")))
-        assertFalse(File(File(base, "audio-cache"), "H.mp3").exists())
+        val hit = AudioCache.localFileOrNull(song("H"))
+        assertNotNull(hit, "FLAC 缓存必须命中，否则无损每次都重新下载")
+        assertTrue(hit.name.endsWith(".flac"), "实际命中：${hit.name}")
     }
 
     // ---------------------------------------------------------------- probe 2

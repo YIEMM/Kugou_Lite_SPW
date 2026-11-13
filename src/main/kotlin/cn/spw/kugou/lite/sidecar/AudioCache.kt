@@ -59,6 +59,63 @@ fun withGeneratorTag(text: String): String {
     return "[by:$GENERATOR_TAG]" + "\n" + cleaned
 }
 
+/**
+ * 已知的音频容器扩展名。
+ *
+ * 查找缓存时逐个探测：`ensureLocal` 按上游返回的容器写文件（mp3 / flac / m4a…），
+ * 而查找侧**不知道**当时拿到的是哪种，只能枚举。
+ *
+ * 曾经只探测 `mp3` —— 无损缓存写成了 `.flac` 却永远查不到，
+ * 于是每次播放都重新下载（BUG-07）。真机上表现为「无损总是慢、磁盘里堆着同一首歌」。
+ */
+internal val CACHE_AUDIO_EXTS: List<String> = listOf("mp3", "flac", "m4a", "ogg", "aac", "wav")
+
+/**
+ * 缓存键净化：只保留字母数字与 `-` `_`，其余一律替换成 `_`。
+ *
+ * **这是安全边界，不是排版**：`key` 来自上游 hash / `albumAudioId`，
+ * 直接拼进 `File(cacheDir, "$key.$ext")` 时，万一上游返回 `../../x`，
+ * 就能把文件写出缓存目录（BUG-36）。
+ */
+internal fun sanitizeCacheKey(raw: String): String {
+    val sb = StringBuilder(raw.length)
+    for (ch in raw) {
+        sb.append(if (ch.isLetterOrDigit() || ch == '-' || ch == '_') ch else '_')
+    }
+    return sb.toString().trim('_').ifBlank { "unknown" }
+}
+
+/**
+ * 缓存键（文件名主干）：`hash` 优先，其次 `albumAudioId`；两者都空返回 null。
+ *
+ * 净化后的结果不含路径字符，可直接作为文件名。
+ */
+internal fun cacheStemOf(hash: String, albumAudioId: String): String? {
+    val raw = hash.ifBlank { albumAudioId }.trim()
+    if (raw.isBlank()) return null
+    return sanitizeCacheKey(raw)
+}
+
+/**
+ * 缓存文件名：`<stem>-<quality>.<ext>`。
+ *
+ * ## 为什么音质要进文件名
+ *
+ * 音质档位曾经不是缓存键的一部分：设置从「标准」切到「无损」后，仍然命中
+ * 之前那份 128k 文件 —— 用户切了音质却听不出任何变化，还以为设置没生效（BUG-08）。
+ *
+ * 音质参数用的是**用户请求的档位**（`Settings.requestQuality()`），不是服务端
+ * 实际给的：`resolveQualityChain()` 会回退（请求 flac 拿到 320 是常态），
+ * 若按实际档位命名，下次请求 flac 就查不到 `-320.mp3`，又退化成重复下载。
+ *
+ * 音质为空时按标准档（128）兜底，避免出现 `ABC-.mp3` 这种无法复现的名字。
+ */
+internal fun cacheName(stem: String, quality: String, ext: String): String {
+    val q = sanitizeCacheKey(quality.ifBlank { "128" })
+    val e = ext.ifBlank { "mp3" }.lowercase()
+    return "$stem-$q.$e"
+}
+
 object AudioCache {
 
     private const val TAG = "cache"
@@ -78,12 +135,20 @@ object AudioCache {
      *
      * 用于「队列预填」：建队列时如果某首歌之前播过，直接拿它的路径，
      * 宿主立刻就能读到封面与歌词，不必再走一次网络。
+     *
+     * 按当前请求音质逐个容器扩展名探测；旧命名（`<key>.mp3`，无音质后缀）
+     * **有意不再命中** —— 无法判断它是什么音质，继续命中就等于让 BUG-08 复活。
+     * 旧文件由用户的「清除缓存」回收。
      */
     fun localFileOrNull(song: Song): File? {
         val cacheDir = dir ?: return null
-        val key = song.hash.ifBlank { song.albumAudioId }.ifBlank { return null }
-        val f = File(cacheDir, "$key.mp3")
-        return if (f.isFile && f.length() > 0) f else null
+        val stem = cacheStemOf(song.hash, song.albumAudioId) ?: return null
+        val quality = Settings.requestQuality()
+        for (ext in CACHE_AUDIO_EXTS) {
+            val f = File(cacheDir, cacheName(stem, quality, ext))
+            if (f.isFile && f.length() > 0) return f
+        }
+        return null
     }
 
     /**
@@ -110,9 +175,9 @@ object AudioCache {
             return null
         }
 
-        val key = song.hash.ifBlank { song.albumAudioId }.ifBlank { return null }
+        val stem = cacheStemOf(song.hash, song.albumAudioId) ?: return null
         val ext = stream.extName.ifBlank { "mp3" }.lowercase()
-        val target = File(cacheDir, "$key.$ext")
+        val target = File(cacheDir, cacheName(stem, Settings.requestQuality(), ext))
 
         // 已有缓存 → 补齐元数据后直接返回
         if (target.isFile && target.length() > 0) {
@@ -121,7 +186,7 @@ object AudioCache {
         }
 
         // 下载
-        val part = File(cacheDir, "$key.$ext.part")
+        val part = File(cacheDir, "${target.name}.part")
         part.delete()
 
         for (url in stream.allUrls) {
