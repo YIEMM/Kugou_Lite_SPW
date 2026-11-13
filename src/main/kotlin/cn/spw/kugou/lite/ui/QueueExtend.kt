@@ -26,6 +26,14 @@ internal const val ALL_AT_ONCE_PAGE_SIZE = 100
 /** 一次拉全时最多翻多少页（防御性上限，100×20 = 2000 首）。 */
 internal const val ALL_AT_ONCE_MAX_PAGES = 20
 
+/**
+ * 歌单详情最多探测多少首「能否播放」。
+ *
+ * 每首一次取流请求（约 100–300ms），全探 122 首要 15–40 秒，
+ * 所以限量。超出的曲目保持未知（不标「无版权」），点击时再实时判断。
+ */
+internal const val PLAYLIST_PROBE_LIMIT = 20
+
 /** 私人 FM 队列剩余这么多首时开始补货。 */
 internal const val FM_REFILL_THRESHOLD = 2
 

@@ -36,6 +36,24 @@ data class Song(
     val fileSize: Long,
     /** 版权/付费标记。`0` 通常可免费取流。 */
     val payType: Int,
+    /**
+     * `media_privilege`：0 = 普通可播；非 0 = 有额外限制（无版权/会员专享）。
+     *
+     * 实测「この世界を愛したいんだ」为 5、取流返回 `31833`（无版权）；
+     * 可播歌曲为 0。判定见 [playabilityOf]。
+     */
+    val mediaPrivilege: Int = 0,
+    /**
+     * `trans_param.display`：0 = 平台不展示播放，1 = 正常，-1 = 字段缺失。
+     */
+    val displayFlag: Int = -1,
+    /**
+     * 已探测到的可播放性。
+     *
+     * 接口字段猜不出来（见 [playabilityOf] 的反证），只能靠实际取流探测后回填。
+     * [Playability.Unknown] = 还没探测，界面不标任何标签。
+     */
+    val probed: Playability = Playability.Unknown,
     /** 专辑名。 */
     val albumName: String?,
     /**
@@ -126,6 +144,17 @@ data class Song(
     /** 把封面模板 URL 的 `{size}` 换成实际像素。 */
     fun coverUrl(px: Int = 240): String? =
         imageUrl?.replace("{size}", px.toString())?.takeIf { it.startsWith("http") }
+
+    /**
+     * 可播放性（用户需求：无版权歌曲标注、播放全部时剔除）。
+     *
+     * 只认探测结果 —— 不再用 `media_privilege` 猜（实测该字段与可播放性无关，
+     * 见 [playabilityOf] 的反证表格）。
+     */
+    val playability: Playability get() = probed
+
+    /** 是否**确认**无版权（未知不算）。 */
+    val isNoCopyright: Boolean get() = probed == Playability.NoCopyright
 
     /**
      * 是否可以取流。
@@ -362,3 +391,46 @@ data class AlbumBrief(
     fun coverAt(px: Int = 240): String? =
         coverUrl?.replace("{size}", px.toString())?.takeIf { it.startsWith("http") }
 }
+
+// ---------------------------------------------------------------- 可播放性
+
+/**
+ * 歌曲可播放性。
+ *
+ * 用户需求：无版权歌曲在列表里标注「无版权」，点「播放全部」时自动剔除，
+ * 单独点击时提示无法播放。
+ */
+enum class Playability {
+    /** 可以播放。 */
+    Ok,
+
+    /** 无版权 / 已下架，点了也不能播。 */
+    NoCopyright,
+
+    /** 尚未探测（默认值，界面不标任何东西）。 */
+    Unknown,
+}
+
+/**
+ * 由接口字段判断可播放性 —— **不可靠，仅作粗筛**。
+ *
+ * ## 为什么不靠 media_privilege（实测反证）
+ *
+ * 2026-11 实测「yi_捏喜欢的音乐」歌单前 10 首：
+ *
+ * | 歌曲 | media_privilege | trans_param.display | 实际取流 |
+ * |---|---|---|---|
+ * | ハレハレヤ | 8 | 0 | **31833 无版权** |
+ * | 群青 | 10 | 0 | **成功** ← 反证 |
+ * | 春に落ちて | 8 | 0 | 成功 |
+ * | 我们的歌 | 10 | 0 | 成功（收藏页解锁） |
+ *
+ * `media_privilege` 取 5/8/10 都既有能播也有不能播的，与可播放性**无相关性**。
+ * 所以真正可靠的判定只有**实际取流一次**（见 [KugouApi::probePlayability]）。
+ *
+ * 这个函数只保留给「明确无版权」的单向判断，其余一律 [Playability.Unknown]。
+ */
+fun playabilityOf(mediaPrivilege: Int, displayFlag: Int): Playability = Playability.Unknown
+
+/** 31833 = 无版权/已下架（取流接口实测返回 `illegal key`）。 */
+fun isNoCopyrightErrorCode(code: Int): Boolean = code == 31833

@@ -582,7 +582,15 @@ private fun SongTableState(state: Async<List<Song>?>, emptyText: String) {
  * 集中在一处的好处：以后改进播放链路（比如预取下一首、音质重试）
  * 只需要改这里，不用同步改四个页面。
  */
-internal fun playSongsFromQueue(queue: List<Song>, index: Int, needMore: (() -> Unit)? = null) {
+internal fun playSongsFromQueue(
+    queue: List<Song>,
+    index: Int,
+    needMore: (() -> Unit)? = null,
+    // 注意：onUnplayable 必须放在最后一个**具名**参数之后仍安全，
+    // 但为了不破坏既有调用点的尾随 lambda（它们传的是 needMore），
+    // 已在下方把所有调用点改成具名参数。
+    onUnplayable: ((Song, String) -> Unit)? = null,
+) {
     val song = queue.getOrNull(index) ?: return
     Diag.info("[page] 点歌「${song.title}」- ${song.singer}（${index + 1}/${queue.size}）")
     ApiExec.run({ result ->
@@ -590,7 +598,12 @@ internal fun playSongsFromQueue(queue: List<Song>, index: Int, needMore: (() -> 
     }) {
         val stream = KugouApi.streamUrl(song)
         if (stream == null) {
-            Diag.warn("[page] 取流失败：${KugouApi.lastError ?: "未知原因"}")
+            val reason = KugouApi.lastError ?: "未知原因"
+            Diag.warn("[page] 取流失败：$reason")
+            // 取流失败且原因是版权类 → 告知 UI 标为无版权（用户需求）
+            if (reason.contains("版权限制") || reason.contains("会员")) {
+                onUnplayable?.invoke(song, reason)
+            }
             return@run
         }
         // 先取歌词，再让 AudioCache 一并补齐（音频 + 封面 + 逐字歌词）

@@ -258,6 +258,8 @@ internal fun DataTableRow(
     onRowClick: () -> Unit,
     modifier: Modifier = Modifier,
     cells: DataTableCells = DataTableCells(),
+    /** 行尾小标签，如「无版权」；null 表示不显示。 */
+    badge: String? = null,
 ) {
     val c = KugouTheme.colors
     var hovered by remember { mutableStateOf(false) }
@@ -317,6 +319,17 @@ internal fun DataTableRow(
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
             )
+        }
+        // 无版权小标签（用户需求：无版权歌曲后面标注出来）
+        if (badge != null) {
+            Box(
+                Modifier
+                    .padding(end = 6.dp)
+                    .background(c.subtle, androidx.compose.foundation.shape.RoundedCornerShape(4.dp))
+                    .padding(horizontal = 6.dp, vertical = 2.dp),
+            ) {
+                Text3(text = badge, color = c.faint, maxLines = 1)
+            }
         }
         Text3(
             text = duration,

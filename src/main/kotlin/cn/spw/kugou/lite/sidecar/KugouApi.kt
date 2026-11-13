@@ -46,6 +46,16 @@ object KugouApi {
      */
     private const val COLLECT_PAGE_ID = "356753938"
 
+    /**
+     * 两次取流探测之间的最小间隔（毫秒）。
+     *
+     * 实测大量连续取流会触发酷狗频控，**全部返回 status=3**，
+     * 表现成「整个歌单都无版权」。连 600ms 间隔都不行
+     * （4 首里 3 首假失败），5 秒间隔才稳定（4 首里 3 首真成功）。
+     * 取 3 秒作为折中；主动探测只覆盖前几首，其余靠点击时实时判定。
+     */
+    const val PROBE_INTERVAL_MS = 3000L
+
     /** 最近一次调用是否因未登录被拒（20028）。UI 据此提示去登录。 */
     @Volatile
     var lastNeedsLogin: Boolean = false
@@ -724,13 +734,42 @@ object KugouApi {
         if (rawList.isEmpty()) return SongPage(emptyList(), JsonLite.asInt(data["count"]), 0)
 
         val rawCount = rawList.size
-        val songs = rawList.mapNotNull { parseOwnListSong(it) }
+        var songs = rawList.mapNotNull { parseOwnListSong(it) }
+        // 补封面：/new 接口对部分歌返回空 cover（实测 122 首里 6 首）。
+        // 用 hash 精确匹配搜索补图，限制次数避免拖慢首屏。
+        songs = backfillCovers(songs, maxLookups = 12)
         val total = JsonLite.asInt(data["count"]).takeIf { it > 0 } ?: songs.size
         Diag.info(
             TAG,
             "歌单(listid=$listId) 第 $page 页 [own] → 解析 ${songs.size} 首（原始 $rawCount 条），总数 $total",
         )
         return SongPage(songs, total, rawCount, (rawCount - songs.size).coerceAtLeast(0))
+    }
+
+    /**
+     * 给缺封面的歌曲补图（最多补 [maxLookups] 首，避免首屏卡顿）。
+     *
+     * 补不到就保持 null —— 界面会显示占位图，不影响播放。
+     */
+    private fun backfillCovers(songs: List<Song>, maxLookups: Int): List<Song> {
+        // ⚠️ 判定用 isNullOrBlank，不能用 coverUrl() == null：
+        // 缺图的条目光 imageUrl 是**空字符串**而不是 null，
+        // coverUrl() 里 `takeIf { it.startsWith("http") }` 会返回 null，
+        // 但早期版本用 imageUrl 直接判断导致整批跳过（实测无「补封面」日志）。
+        val missing = songs.withIndex().filter { it.value.imageUrl.isNullOrBlank() }
+        if (missing.isEmpty()) return songs
+        val limit = minOf(missing.size, maxLookups)
+        val patched = songs.toMutableList()
+        var filled = 0
+        for (i in 0 until limit) {
+            val (idx, song) = missing[i]
+            val url = runCatching { searchCoverByHash(song.hash, song.singer, song.title) }
+                .getOrNull() ?: continue
+            patched[idx] = song.copy(imageUrl = url)
+            filled++
+        }
+        Diag.info(TAG, "补封面：${filled}/${missing.size} 首（本页最多查 $maxLookups 首）")
+        return patched
     }
 
     /**
@@ -768,15 +807,23 @@ object KugouApi {
         }
 
         val title = titleFromName.ifBlank { composite }
+        // 封面优先级：cover → trans_param.union_cover。
+        // 实测「この世界を愛したいんだ」cover 有值，但「别让我等待」两者皆空
+        // （那种靠 CoverBackfill 用 hash 搜索补图）。
+        val cover = firstString(obj, "cover", "img", "imgurl", "sizable_cover")
+            ?: JsonLite.asString(JsonLite.dig(obj["trans_param"], "union_cover"))
         return Song(
             fileName = composite.ifBlank { title },
             title = title,
             singer = singer,
             hash = hash,
             durationSec = durationSec,
-            imageUrl = firstString(obj, "cover", "img", "imgurl", "sizable_cover"),
+            imageUrl = cover,
             fileSize = firstLong(obj, "size", "file_size"),
             payType = firstInt(obj, "media_pay_type", "pay_type"),
+            mediaPrivilege = firstInt(obj, "media_privilege"),
+            displayFlag = JsonLite.asObject(obj["trans_param"])
+                ?.let { JsonLite.asInt(it["display"], -1) } ?: -1,
             albumName = JsonLite.asString(JsonLite.dig(obj["albuminfo"], "name"))
                 ?: firstString(obj, "album_name"),
             albumAudioId = firstString(obj, "album_audio_id", "mixsongid").orEmpty(),
@@ -786,6 +833,74 @@ object KugouApi {
             mixSongId = mixSongId,
             fileId = firstLong(obj, "fileid", "file_id"),
         )
+    }
+
+    /**
+     * 探测一首歌是否真的能播放（用户需求：无版权标注）。
+     *
+     * ## 为什么必须实测
+     *
+     * 接口字段猜不出来。实测「yi_捏喜欢的音乐」：
+     *
+     * | 歌曲 | media_privilege | display | 实际 |
+     * |---|---|---|---|
+     * | ハレハレヤ | 8 | 0 | 31833 无版权 |
+     * | 群青 | 10 | 0 | **成功** |
+     * | 我们的歌 | 10 | 0 | 成功（收藏页解锁） |
+     *
+     * 同样的 privilege=10 + display=0，既有能播也有不能播。
+     *
+     * ## 频率限制（踩过的坑）
+     *
+     * 连续快速发取流请求会触发酷狗频控，**全部返回 status=3**，
+     * 表现成「整个歌单都无版权」。实测 4 秒内发 20+ 次就全挂。
+     * 所以调用方必须限速（见 [PROBE_INTERVAL_MS]）。
+     *
+     * @return 可播放性；无法判断时返回 [Playability.Unknown]
+     */
+    fun probePlayability(song: Song): Playability {
+        val stream = streamUrl(song, "128")
+        if (stream != null) return Playability.Ok
+        // 拿不到直链：区分「无版权」与「频控/网络/登录问题」
+        val err = lastError.orEmpty()
+        val noCopyright = err.contains("版权限制") || err.contains("会员")
+        return if (noCopyright) Playability.NoCopyright else Playability.Unknown
+    }
+
+    /**
+     * 用 hash 搜索补封面（用户反馈「有些歌曲无法正常获取到图片」）。
+     *
+     * ## 为什么需要
+     *
+     * `/playlist/track/all/new` 对部分歌曲返回空 `cover`（实测 122 首里 6 首），
+     * `album/detail` 对这类歌也是空图。但用**歌名搜索**能命中同一首：
+     *
+     * ```
+     * 别让我等待 - 苏蓝冰 | Image=http://imge.kugou.com/stdmusic/{size}/… | FileHash=D61D892D…（与目标一致）
+     * ```
+     *
+     * 所以补图策略：用「歌手 + 歌名」搜一次，**只接受 FileHash 完全匹配**的结果，
+     * 避免把同名不同版本的封面安到别的歌上。
+     *
+     * @return 封面 URL（含 `{size}` 占位）；找不到返回 null
+     */
+    fun searchCoverByHash(hash: String, singer: String, title: String): String? {
+        if (hash.isBlank() || title.isBlank()) return null
+        // ⚠️ 只用**歌名**搜，不要拼歌手：实测「斯奈、刘茜悦 别让我等待」
+        // 命中 0 条，而单搜「别让我等待」能命中 10 条并含目标 hash
+        // （酷狗搜索对多歌手串匹配很差）。命中后靠 FileHash 精确校验。
+        val json = get("/search", mapOf("keywords" to title, "page" to "1", "pagesize" to "10"))
+            ?: return null
+        val lists = JsonLite.asArray(JsonLite.dig(json, "data", "lists")).orEmpty()
+        for (item in lists) {
+            val obj = JsonLite.asObject(item) ?: continue
+            val fileHash = firstString(obj, "FileHash", "hash", "FileHashLow").orEmpty()
+            if (!fileHash.equals(hash, ignoreCase = true)) continue
+            val img = firstString(obj, "Image", "img", "sizable_cover")
+                ?: JsonLite.asString(JsonLite.dig(obj["trans_param"], "union_cover"))
+            if (!img.isNullOrBlank()) return img
+        }
+        return null
     }
 
     /** `/playlist/track/all` —— 任意歌单（用 gid）；屏蔽曲目只回占位。 */
@@ -1083,6 +1198,9 @@ object KugouApi {
                 ?: JsonLite.asString(JsonLite.dig(obj["trans_param"], "union_cover")),
             fileSize = size,
             payType = firstInt(obj, "PayType", "pay_type"),
+            mediaPrivilege = firstInt(obj, "media_privilege", "mediaPrivilege", "privilege"),
+            displayFlag = JsonLite.asObject(obj["trans_param"])
+                ?.let { JsonLite.asInt(it["display"], -1) } ?: -1,
             albumName = firstString(obj, "AlbumName", "album_name", "remark"),
             albumAudioId = albumAudioId,
             artistIds = artistIds,

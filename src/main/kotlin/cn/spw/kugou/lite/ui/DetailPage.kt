@@ -1,6 +1,8 @@
 package cn.spw.kugou.lite.ui
 
+import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -90,6 +92,15 @@ fun DetailPage() {
     var firstPageRawCount by remember { mutableStateOf(0) }
     /** 累计因版权屏蔽被丢弃的条目数（用于头部提示）。 */
     var droppedTotal by remember { mutableStateOf(0) }
+    /** 点无版权歌曲时的提示文案（显示成一条横幅）。 */
+    var playNotice by remember { mutableStateOf("") }
+    /**
+     * 已探测到的无版权曲目：`hash → true`。
+     *
+     * 判定只认**实际取流结果**（`media_privilege` 与可播性无关，实测反证见
+     * [KugouApi.probePlayability] 的注释）。
+     */
+    var noCopyright by remember { mutableStateOf(emptyMap<String, Boolean>()) }
 
     LaunchedEffect(type, rankId, playlistId, sectionId, albumId) {
         page = 1
@@ -227,6 +238,38 @@ fun DetailPage() {
         }
     }
 
+    // 后台探测无版权曲目（不阻塞首屏）。
+    //
+    // ## 为什么只能小批量探测（实测教训）
+    //
+    // 酷狗对取流有**强频控**：连发 20+ 次，即使间隔 600ms，也会全部返回
+    // `status=3`，看起来像「整个歌单都无版权」。实测间隔 5 秒时 4 首里 3 首成功。
+    //
+    // 所以主动探测只能覆盖很少的曲目，**主要靠用户点击时实时判定**
+    // （见下面 onRowClick：取流失败且 lastError 是版权类才提示无版权）。
+    // 这里只探测前几个，用于「播放全部」时的预过滤参考。
+    LaunchedEffect(allSongs.size) {
+        if (allSongs.isEmpty()) return@LaunchedEffect
+        if (type != "playlist" && type != "square" && type != "album") return@LaunchedEffect
+        val targets = allSongs
+            .filter { it.hash.isNotBlank() && !noCopyright.containsKey(it.hash) }
+            .take(PLAYLIST_PROBE_LIMIT)
+        if (targets.isEmpty()) return@LaunchedEffect
+        for (song in targets) {
+            val result = runCatching {
+                cn.spw.kugou.lite.sidecar.KugouApi.probePlayability(song)
+            }.getOrDefault(cn.spw.kugou.lite.sidecar.Playability.Unknown)
+            if (result == cn.spw.kugou.lite.sidecar.Playability.NoCopyright) {
+                noCopyright = noCopyright + (song.hash to true)
+            }
+            // 间隔必须够大，否则全被频控打成「无版权」（见上面的说明）
+            kotlinx.coroutines.delay(cn.spw.kugou.lite.sidecar.KugouApi.PROBE_INTERVAL_MS)
+        }
+        if (noCopyright.isNotEmpty()) {
+            Diag.info("[detail] 无版权探测：${noCopyright.size} 首不可播")
+        }
+    }
+
     // 首屏拉完后，如果还有剩余页就自动接着拉（用户要求一次全量加载）
     LaunchedEffect(hasMore, allSongs.size) {
         if (hasMore && allSongs.isNotEmpty() && !loadingMore &&
@@ -258,7 +301,19 @@ fun DetailPage() {
                     meta = heroMeta(type, list.size, albumList.size, declaredCount, droppedTotal),
                 ) {
                     if (list.isNotEmpty()) {
-                        ActionChip("▶ 播放全部") { playSongsFromQueue(list, 0) }
+                        // 播放全部：自动剔除无版权曲目（用户需求）。
+                        // 全被剔除时给提示，而不是建一个空队列。
+                        ActionChip("▶ 播放全部") {
+                            val playable = list.filter { noCopyright[it.hash] != true }
+                            when {
+                                playable.isEmpty() -> playNotice = "该列表所有歌曲都暂无版权"
+                                playable.size < list.size -> {
+                                    playNotice = "已跳过 ${list.size - playable.size} 首无版权歌曲"
+                                    playSongsFromQueue(playable, 0)
+                                }
+                                else -> playSongsFromQueue(playable, 0)
+                            }
+                        }
                     }
                     if (type == "playlist" || type == "square") {
                         ActionChip("♥ 收藏") { Diag.info("[detail] 收藏歌单（入口占位）") }
@@ -266,6 +321,26 @@ fun DetailPage() {
                 }
 
                 // ---------------------------------------------- 内容
+                // 无版权提示横幅（点无版权歌曲 / 播放全部跳过后显示）
+                if (playNotice.isNotBlank()) {
+                    Row(
+                        Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 16.dp, vertical = 6.dp)
+                            .background(KugouTheme.colors.subtle, RoundedCornerShape(8.dp))
+                            .clickable { playNotice = "" }
+                            .padding(horizontal = 12.dp, vertical = 10.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Text3(
+                            text = playNotice,
+                            color = KugouTheme.colors.text,
+                            modifier = Modifier.weight(1f),
+                            maxLines = 2,
+                        )
+                        Text3("✕", color = KugouTheme.colors.faint, maxLines = 1)
+                    }
+                }
                 when {
                     type == "discover" && sectionId == "newAlbums" -> AlbumGridBlock(albums.value)
                     else -> {
@@ -279,6 +354,11 @@ fun DetailPage() {
                                 { requestNextPage() }
                             } else {
                                 null
+                            },
+                            onNotice = { playNotice = it },
+                            noCopyrightHashes = noCopyright,
+                            noCopyrightHashesCallback = { h ->
+                                noCopyright = noCopyright + (h to true)
                             },
                         )
                         // 手动「加载更多」（与自动续拉共用同一个 requestNextPage）
@@ -375,6 +455,10 @@ private fun SongTableBlock(
     allSongs: List<Song>,
     showAlbum: Boolean,
     needMore: (() -> Unit)? = null,
+    onNotice: (String) -> Unit = {},
+    noCopyrightHashes: Map<String, Boolean> = emptyMap(),
+    /** 取流失败确认无版权时回调（把 hash 记进 map）。 */
+    noCopyrightHashesCallback: (String) -> Unit = {},
 ) {
     when (val s = state) {
         is Async.Idle, is Async.Loading -> DetailStatus("正在加载…")
@@ -387,6 +471,7 @@ private fun SongTableBlock(
                 )
                 else -> SaltCardBlock {
                     display.forEachIndexed { index, song ->
+                        val noCopyright = noCopyrightHashes[song.hash] == true
                         DataTableRow(
                             index = "%02d".format(index + 1),
                             coverUrl = song.coverUrl(120),
@@ -395,7 +480,27 @@ private fun SongTableBlock(
                             album = song.albumName,
                             duration = song.durationText,
                             showAlbum = showAlbum,
-                            onRowClick = { playSongsFromQueue(display, index, needMore) },
+                            // 无版权歌曲：点击时提示而不能播放（用户需求）
+                            // 无版权歌曲：点击时提示而不能播放（用户需求）。
+                            // 已探测到的直接提示；未探测的先实时试取流一次，
+                            // 失败且原因是版权类就提示（比盲目相信接口字段准确）。
+                            onRowClick = {
+                                if (noCopyright) {
+                                    onNotice("「${song.title}」暂无版权，无法播放")
+                                } else {
+                                    playSongsFromQueue(
+                                        queue = display,
+                                        index = index,
+                                        needMore = needMore,
+                                        onUnplayable = { bad, reason ->
+                                        // 取流失败且确属版权问题 → 当场标为无版权并提示
+                                        noCopyrightHashesCallback(bad.hash)
+                                        onNotice("「${bad.title}」暂无版权，无法播放（$reason）")
+                                        },
+                                    )
+                                }
+                            },
+                            badge = if (noCopyright) "无版权" else null,
                             cells = DataTableCells(
                                 onArtist = if (song.artists.firstOrNull()?.id?.isNotBlank() == true) {
                                     { PageNav.openArtist(song.artists.first().id, song.artists.first().name) }
