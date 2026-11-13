@@ -87,6 +87,16 @@ object KrcLyrics {
         extractLanguageLines(krc, wantType = 1)
 
     /**
+     * 是否有**实际可读**的中文译文（不是只有罗马音）。
+     *
+     * 用户反馈「みむかゥわナイストライ没有翻译」：该曲的 `[language:]`
+     * 段只有 `type=0`（罗马音），`extractTranslation` 返回空列表。
+     * 这里要求至少有一行非空译文，用于决定是否要去找同名其它版本。
+     */
+    fun hasMeaningfulTranslation(krc: String): Boolean =
+        extractTranslation(krc).any { it.isNotBlank() }
+
+    /**
      * 从 KRC 里解出**罗马音**行。
      *
      * 结构见 [extractTranslation]。罗马音是**逐字**数组
@@ -180,7 +190,15 @@ object KrcLyrics {
      * @param withTranslation 是否带上翻译行
      */
     fun toEnhancedLrc(krc: String, withTranslation: Boolean = true): String {
-        val translation = if (withTranslation) extractTranslation(krc) else emptyList()
+        // 优先中文译文（type=1）；没有就退化为罗马音（type=0）。
+        // 用户反馈「みむかゥわナイストライ没有翻译」：该曲 KRC 只有罗马音，
+        // 早期只取译文 → 完全没有翻译行。至少给用户读音。
+        val translation = if (withTranslation) {
+            extractTranslation(krc).takeIf { it.any { line -> line.isNotBlank() } }
+                ?: extractRomanization(krc)
+        } else {
+            emptyList()
+        }
         val cleaned = sanitize(krc)
         val out = StringBuilder()
 

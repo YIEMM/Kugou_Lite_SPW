@@ -55,13 +55,13 @@ object PlaybackBridge {
     private const val TAG = "play"
 
 /**
- * 建队列时「当前曲目之后」预探测多少首。
+ * 建队列后，后台最多给「当前曲目之后」几首预取流地址。
  *
- * 取流很贵且有频控（连发会被判 status=3），所以只探最近几首：
- * 用户的抱怨是「播到无版权的歌卡住」，而实际会踩到的通常是紧接着的几首。
- * 更靠后的曲目由后台补 path，失败时单独处理。
+ * 不能对整条队列逐首发请求：ApiExec 只有 3 个线程，122 首会把线程池
+ * 占满，用户新的点击只能排队（表现为「点了不播放」）；连发还会触发
+ * 酷狗频控。更靠后的曲目由 TrackWatcher 切歌时按需补齐。
  */
-private const val QUEUE_PREFILTER_AHEAD = 3
+private const val QUEUE_FILL_AHEAD = 3
 
     private const val CONTROLLER_CLASS = "com.xuncorp.voxzen.service.PlaybackController"
     private const val MEDIA_ITEM_CLASS = "com.xuncorp.pisces.PiscesMediaItem"
@@ -250,44 +250,16 @@ private const val QUEUE_PREFILTER_AHEAD = 3
                 ?: return false
 
             // 其余曲目：先用已知的本地缓存路径（若是之前播过的），
-            // 没有就让后台补齐。
+            // 没有就让后台补 path。
             //
-            // ⚠️ 但**取流失败的曲目必须从队列里剔除**，不能留空 path 占位
-            // （用户反馈：「装上无版权的歌怎么办，Salt 不会自动跳过」）。
-            // 宿主播到空 path 的项会卡住不动 —— 它不知道这个条目是坏的。
-            // 所以这里对「没有缓存路径」的曲目做一次快速探测，失败的直接不要。
-            val prefiltered = ArrayList<Pair<Song, String>>(songs.size)
-            var newIdx = idx
-            for ((i, s) in songs.withIndex()) {
-                if (i == idx) {
-                    prefiltered.add(s to currentPath)
-                    continue
-                }
-                val cached = cachedLocalPath(s)
-                if (cached != null) {
-                    prefiltered.add(s to cached)
-                    continue
-                }
-                // 未缓存：探测一次。失败 → 整条跳过（不入队）
-                if (i <= idx + QUEUE_PREFILTER_AHEAD) {
-                    val probe = runCatching { resolveStream(s) }.getOrNull()
-                    if (probe == null) {
-                        // 只有「当前曲目之前的项」被剔除时才需要修正下标
-                        if (i < newIdx) newIdx--
-                        Diag.info(TAG, "队列预筛：跳过不可播「${s.title}」")
-                        continue
-                    }
-                    prefiltered.add(s to probe.url)
-                } else {
-                    // 太靠后的不预先探测（避免慢 + 频控），留后台补
-                    prefiltered.add(s to "")
-                }
-            }
-            if (prefiltered.isEmpty()) return false
-            val clampedIdx = newIdx.coerceIn(0, prefiltered.lastIndex)
-
-            val items = prefiltered.mapIndexed { i, (s, path) ->
-                newMediaItem(s, buildTrackId(s), if (i == clampedIdx) currentPath else path)
+            // ⚠️ 这里**不做**预探测：逐首发取流会触发酷狗频控，
+            // 把本来能播的歌误判为不可播。真正取不到地址的曲目，
+            // 由 fillQueuePathsAsync 在后台补齐失败时从队列剔除
+            // （见 removeFromQueue）—— 只在真实失败后处理，不预先猜测。
+            val items = songs.mapIndexed { i, s ->
+                val trackId = buildTrackId(s)
+                val path = if (i == idx) currentPath else cachedLocalPath(s) ?: ""
+                newMediaItem(s, trackId, path)
             }.filterNotNull()
 
             if (items.isEmpty()) return false
@@ -301,11 +273,11 @@ private const val QUEUE_PREFILTER_AHEAD = 3
             // updateItem + setAudioSource + prepare + play，
             // 导致同一首歌被加载两次：宿主开始播 0.3 秒后，
             // 第二次加载把它重置回 0 秒重新开始 —— 就是用户说的「抖动」。
-            setQueueList?.invoke(ctrl, items, clampedIdx)
+            setQueueList?.invoke(ctrl, items, idx)
             prepareMethod?.invoke(ctrl)
             playMethod?.invoke(ctrl)
 
-            Diag.info(TAG, "已建立播放队列：${items.size} 首，从第 ${clampedIdx + 1} 首「${currentSong.title}」开始")
+            Diag.info(TAG, "已建立播放队列：${items.size} 首，从第 ${idx + 1} 首「${currentSong.title}」开始")
 
             // 后台补齐整个队列的 path（命中缓存时几乎零开销）
             fillQueuePathsAsync(ctrl, songs, idx, resolveStream)
@@ -390,24 +362,31 @@ private const val QUEUE_PREFILTER_AHEAD = 3
         resolveStream: (Song) -> StreamInfo?,
     ) {
         Thread({
-            // 记录取流失败、需要从队列剔除的曲目（用户反馈：
-            // 「装上无版权的歌怎么办，Salt 不会自动跳过」——
-            // 留空 path 的项宿主播到会卡住，必须真的移出队列）。
+            // ⚠️ 只补「当前曲目之后最近几首」，不要对整条队列逐首发请求。
+            //
+            // 用户反馈「点击之后不会直接播放」：早期版本后台对 122 首里
+            // 每一首未缓存的都发取流请求，而 ApiExec 只有 3 个线程，
+            // 很快被占满，用户新的点击只能排队 → 看起来点了没反应。
+            // 另外连发还会触发酷狗频控。
+            //
+            // 真正取不到地址的曲目由 removeFromQueue 在失败时剔除，
+            // 但只对这几首做，避免打爆线程池。
+            val from = (skipIndex + 1).coerceAtMost(songs.size)
+            val to = (from + QUEUE_FILL_AHEAD).coerceAtMost(songs.size)
             val dead = ArrayList<Song>()
-            for ((i, s) in songs.withIndex()) {
-                if (i == skipIndex) continue
+            for (i in from until to) {
+                val s = songs[i]
                 // 已命中本地缓存的曲目 path 本来就正确，不再重复取流下载。
-                // 续拉时前 N 首通常都已缓存，跳过它们能避免把带宽打满。
                 if (cachedLocalPath(s) != null) continue
                 try {
-                    val stream = resolveStream(s)
+                    val stream = KugouApi.streamUrl(s, allowFallback = false)
                     if (stream == null) {
                         dead.add(s)
                         Diag.info(TAG, "队列剔除「${s.title}」：${KugouApi.lastError ?: "取流失败"}")
                         continue
                     }
                     // 先取歌词，再让 AudioCache 一并补齐（音频 + 封面 + 逐字歌词）
-                    val lrc = runCatching { KugouApi.lyricByHash(s.hash) }.getOrNull()
+                    val lrc = runCatching { KugouApi.lyricByHash(s.hash, s.title, s.singer) }.getOrNull()
                     val local = AudioCache.ensureLocal(s, stream, lrc)
                     val path = local?.absolutePath ?: stream.url
                     newMediaItem(s, buildTrackId(s), path)?.let { updateItem(ctrl, it) }
@@ -420,7 +399,7 @@ private const val QUEUE_PREFILTER_AHEAD = 3
             if (dead.isNotEmpty()) {
                 removeFromQueue(ctrl, dead)
             }
-            Diag.info(TAG, "队列 path 补齐完成（${songs.size} 首，剔除 ${dead.size} 首不可播）")
+            Diag.info(TAG, "队列 path 补齐完成（本次 ${to - from} 首，剔除 ${dead.size} 首不可播）")
         }, "kugou-lite-queue-fill").apply {
             isDaemon = true
             priority = Thread.MIN_PRIORITY
@@ -520,6 +499,18 @@ private const val QUEUE_PREFILTER_AHEAD = 3
     private fun buildTrackId(song: Song): String {
         val raw = song.hash.ifBlank { song.albumAudioId }
         return "kugou-$raw"
+    }
+
+    /**
+     * 当前播放的曲目是否属于 [songs] 这批。
+     *
+     * 供详情页判断「用户是否正在播这个歌单」—— 只有是的时候才该在
+     * 翻页加载后同步宿主播放队列，否则浏览歌单会打断正在播的别的歌。
+     */
+    fun isPlayingFrom(songs: List<Song>): Boolean {
+        val cur = TrackWatcher.currentTrackId()
+        if (cur.isBlank()) return false
+        return songs.any { buildTrackId(it) == cur }
     }
 
     /**

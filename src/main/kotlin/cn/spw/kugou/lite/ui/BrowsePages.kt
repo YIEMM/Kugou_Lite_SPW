@@ -607,7 +607,7 @@ internal fun playSongsFromQueue(
             return@run
         }
         // 先取歌词，再让 AudioCache 一并补齐（音频 + 封面 + 逐字歌词）
-        val lrc = runCatching { KugouApi.lyricByHash(song.hash) }.getOrNull()
+        val lrc = runCatching { KugouApi.lyricByHash(song.hash, song.title, song.singer) }.getOrNull()
         val local = AudioCache.ensureLocal(song, stream, lrc)
         if (local == null) {
             Diag.warn("[page] 本地缓存失败，回退 HTTP 直链")

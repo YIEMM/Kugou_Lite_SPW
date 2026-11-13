@@ -30,11 +30,46 @@ class KrcLyricsTest {
         """.trimIndent()
     }
 
+    /** 只有罗马音（type=0）、没有中文译文（type=1）的样本。 */
+    private val romajiOnly = run {
+        val json = """{"content":[{"lyricContent":[["mi "],["mu "],["ka u "]],"type":0,"language":0}]}"""
+        val b64 = java.util.Base64.getEncoder().encodeToString(json.toByteArray(Charsets.UTF_8))
+        """
+        [id:${'$'}00000000]
+        [ti:みむかゥわナイストライ]
+        [ar:ぬぬぬぬぬぬぬぬ]
+        [by:]
+        [offset:0]
+        [language:$b64]
+        [494,2215]<0,247,0>み<247,116,0>む
+        """.trimIndent()
+    }
+
     @Test
     fun `识别 KRC 格式`() {
         assertTrue(KrcLyrics.isKrc(sample))
         assertFalse(KrcLyrics.isKrc("[00:03.75]愛舐め上手芳しき"))
         assertFalse(KrcLyrics.isKrc(""))
+    }
+
+    /**
+     * 用户反馈「みむかゥわナイストライ 为什么没有翻译」。
+     *
+     * 实测这首歌的 [language:] 段只有 `type=0`（罗马音），没有 `type=1`
+     * （中文译文）。早期实现只取译文 → 完全没有翻译行。
+     * 现在应退化为显示罗马音，至少给用户读音。
+     */
+    @Test
+    fun `没有中文译文时退化为显示罗马音`() {
+        val lrc = KrcLyrics.toEnhancedLrc(romajiOnly, withTranslation = true)
+        assertTrue(lrc.contains("[00:00.49]mi"), "应含罗马音行，实际：\n$lrc")
+        assertFalse(lrc.contains("[language:"), "不应残留 language 段")
+    }
+
+    @Test
+    fun `显式关闭翻译时不输出罗马音`() {
+        val lrc = KrcLyrics.toEnhancedLrc(romajiOnly, withTranslation = false)
+        assertFalse(lrc.contains("]mi"), "关闭翻译后不应有罗马音行，实际：\n$lrc")
     }
 
     @Test

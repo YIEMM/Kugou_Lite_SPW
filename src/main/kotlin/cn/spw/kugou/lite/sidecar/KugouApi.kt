@@ -114,7 +114,7 @@ object KugouApi {
      * @param song 要播放的歌曲
      * @return 成功返回 [StreamInfo]；付费/无权限/未登录返回 null
      */
-    fun streamUrl(song: Song): StreamInfo? {
+    fun streamUrl(song: Song, allowFallback: Boolean = true): StreamInfo? {
         val query = song.streamQuery
         if (query.isEmpty()) {
             lastError = "该歌曲缺少取流标识"
@@ -142,14 +142,19 @@ object KugouApi {
         // 「未发布/已下架」音频。实测 `/song/url/new` 会回
         // `Deny: the audio isn't publish.`，而搜索同名能拿到官方版本。
         // 此时用「歌名 + 歌手」找一条可播的官方资源替换 hash 再取一次。
-        val fallback = resolveCloudAudioFallback(song)
-        if (fallback != null) {
-            Diag.info(TAG, "云歌单音频回退「${song.title}」${song.hash.take(8)} → ${fallback.hash.take(8)}")
-            val retry = streamUrlByQuery("hash=${fallback.hash}", "128", null)
-                ?: streamUrlByQuery("hash=${fallback.hash}", "128", COLLECT_PAGE_ID)
-            if (retry != null) {
-                lastError = null
-                return retry
+        //
+        // ⚠️ allowFallback=false 用于批量补队列/探测场景：回退会额外发
+        // 搜索 + 取流两个请求，批量做会打爆 3 线程的 ApiExec 并触发频控。
+        if (allowFallback) {
+            val fallback = resolveCloudAudioFallback(song)
+            if (fallback != null) {
+                Diag.info(TAG, "云歌单音频回退「${song.title}」${song.hash.take(8)} → ${fallback.hash.take(8)}")
+                val retry = streamUrlByQuery("hash=${fallback.hash}", "128", null)
+                    ?: streamUrlByQuery("hash=${fallback.hash}", "128", COLLECT_PAGE_ID)
+                if (retry != null) {
+                    lastError = null
+                    return retry
+                }
             }
         }
 
@@ -312,12 +317,80 @@ object KugouApi {
      * `LyricsCell(startTime=...)`）本身就是逐字结构，所以喂 KRC 才能
      * 逐字高亮；喂 LRC 只能整行高亮。
      */
-    fun lyricByHash(hash: String): String? {
+    /**
+     * 一步取歌词：内部串起两步。
+     *
+     * 优先取 **KRC（逐字）**，失败再退回 LRC（逐行）。
+     *
+     * ## 为什么优先 KRC
+     *
+     * 酷狗歌词接口的 `fmt` 参数决定格式（实测同一首歌）：
+     *
+     * | fmt | 大小 | 格式 |
+     * |---|---|---|
+     * | `lrc` | 811 B | 逐行 `[00:03.75]愛舐め上手芳しき` |
+     * | `krc` | 7744 B | **逐字** `[191,3515]<0,836,0>黑<836,493,0>縁...` |
+     *
+     * KRC 的逐字格式：
+     * ```
+     * [行起始ms,行时长ms]<字相对偏移ms,字时长ms,0>字<...>字...
+     * ```
+     *
+     * 宿主内部的歌词模型（`com.xuncorp.spc.lyrics.LyricsLine` /
+     * `LyricsCell(startTime=...)`）本身就是逐字结构，所以喂 KRC 才能
+     * 逐字高亮；喂 LRC 只能整行高亮。
+     *
+     * ## 没有译文时按歌名找其它版本（用户反馈）
+     *
+     * 「みむかゥわナイストライ」的云歌单 hash 搜到的歌词候选只有
+     * `type=0`（罗马音），而同名官方版本的候选有 `type=1`（中文译文）。
+     * MoeKoe 能显示译文，是因为它播放的是官方版本那条资源。
+     *
+     * 所以：本 hash 的 KRC 没有译文时，用歌名搜索同名其它版本，
+     * 挑一个带译文的 KRC。仅在明确找不到译文时才做，避免多余请求。
+     */
+    fun lyricByHash(hash: String, title: String = "", singer: String = ""): String? {
         val best = searchLyric(hash).firstOrNull() ?: return null
-        // 先试 KRC（逐字）
-        lyric(best, fmt = "krc")?.takeIf { it.isNotBlank() }?.let { return it }
-        // 退回 LRC（逐行）
+        val own = lyric(best, fmt = "krc")?.takeIf { it.isNotBlank() }
+        if (own != null) {
+            if (KrcLyrics.hasMeaningfulTranslation(own)) return own
+            // 本曲无译文：尝试同名其它版本
+            val alt = lyricFromOtherVersion(title, singer, hash)
+            if (alt != null) return alt
+            return own
+        }
         return lyric(best, fmt = "lrc")
+    }
+
+    /**
+     * 用歌名搜索同名其它版本，挑一个 `[language:]` 里带 `type=1` 译文的 KRC。
+     *
+     * 只在前 5 条搜索结果里试，且跳过与原 hash 相同的版本。
+     */
+    private fun lyricFromOtherVersion(title: String, singer: String, excludeHash: String): String? {
+        if (title.isBlank()) return null
+        val result = runCatching { search(title, page = 1, pageSize = 8) }.getOrNull() ?: return null
+        val others = result.songs.filter {
+            it.hash.isNotBlank() && !it.hash.equals(excludeHash, ignoreCase = true)
+        }
+        // 歌手一致的版本优先（不同翻唱版的译文/断句可能不同，避免串歌词）
+        val ordered = if (singer.isNotBlank()) {
+            others.sortedByDescending { s ->
+                s.singer.equals(singer, ignoreCase = true) ||
+                    s.singer.contains(singer) || singer.contains(s.singer)
+            }
+        } else {
+            others
+        }
+        for (candidate in ordered.take(5)) {
+            val c = searchLyric(candidate.hash).firstOrNull() ?: continue
+            val krc = lyric(c, fmt = "krc") ?: continue
+            if (KrcLyrics.hasMeaningfulTranslation(krc)) {
+                Diag.info(TAG, "歌词译文回退「$title」→ ${candidate.singer} ${candidate.hash.take(8)}")
+                return krc
+            }
+        }
+        return null
     }
 
     /**

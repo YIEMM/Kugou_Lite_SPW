@@ -195,15 +195,30 @@ fun DetailPage() {
             }
             if (fresh.isNotEmpty()) {
                 allSongs = merged
-                // 关键：把新歌同步进宿主的播放队列，否则自动续播时新歌没路径
-                runCatching {
-                    cn.spw.kugou.lite.host.TrackWatcher.appendToQueue(fresh)
-                    cn.spw.kugou.lite.host.PlaybackBridge.appendToQueue(
-                        allSongs = merged,
-                        currentTrackId = currentPlayingTrackId(),
-                        resolveStream = { s -> KugouApi.streamUrl(s) },
-                    )
-                }.onFailure { Diag.warn("[detail] 追加队列失败：${it.message}") }
+                // ⚠️ 只在「本歌单确实正在播放」时才同步宿主队列。
+                //
+                // 用户反馈：打开歌单时播放列表会莫名刷新、播放被中断。
+                // 根因是一次性拉全要走 requestNextPage，早期版本**每翻一页**
+                // 都无条件调 appendToQueue 重建宿主队列 —— 用户只是在浏览
+                // 歌单，播放队列却被替换了好几次。
+                //
+                // 判据：当前播放曲目 id 必须能在本歌单列表里找到。
+                // 找不到就说明用户没在播这个歌单，纯加载数据即可。
+                val curId = currentPlayingTrackId()
+                val isPlayingThisPlaylist = curId.isNotBlank() &&
+                    cn.spw.kugou.lite.host.PlaybackBridge.isPlayingFrom(merged)
+                if (isPlayingThisPlaylist) {
+                    runCatching {
+                        cn.spw.kugou.lite.host.TrackWatcher.appendToQueue(fresh)
+                        cn.spw.kugou.lite.host.PlaybackBridge.appendToQueue(
+                            allSongs = merged,
+                            currentTrackId = curId,
+                            resolveStream = { s -> KugouApi.streamUrl(s) },
+                        )
+                    }.onFailure { Diag.warn("[detail] 追加队列失败：${it.message}") }
+                } else {
+                    Diag.info("[detail] 第 $next 页已加载，非当前播放歌单，不重建播放队列")
+                }
             } else {
                 allSongs = merged
             }
@@ -238,37 +253,17 @@ fun DetailPage() {
         }
     }
 
-    // 后台探测无版权曲目（不阻塞首屏）。
+    // ⚠️ 这里**曾经**有「后台主动探测无版权」的逻辑，现已移除（实测教训）。
     //
-    // ## 为什么只能小批量探测（实测教训）
+    // 原因：探测要逐首发取流请求，连发 20+ 次会触发酷狗频控，
+    // 全部返回 status=3；插件把这些「假失败」当成无版权标注，
+    // 反而把本来能播的歌标成「无版权」。日志里 134 次「取流无地址」
+    // 集中在几秒内，就是主动探测自己制造的。
     //
-    // 酷狗对取流有**强频控**：连发 20+ 次，即使间隔 600ms，也会全部返回
-    // `status=3`，看起来像「整个歌单都无版权」。实测间隔 5 秒时 4 首里 3 首成功。
-    //
-    // 所以主动探测只能覆盖很少的曲目，**主要靠用户点击时实时判定**
-    // （见下面 onRowClick：取流失败且 lastError 是版权类才提示无版权）。
-    // 这里只探测前几个，用于「播放全部」时的预过滤参考。
-    LaunchedEffect(allSongs.size) {
-        if (allSongs.isEmpty()) return@LaunchedEffect
-        if (type != "playlist" && type != "square" && type != "album") return@LaunchedEffect
-        val targets = allSongs
-            .filter { it.hash.isNotBlank() && !noCopyright.containsKey(it.hash) }
-            .take(PLAYLIST_PROBE_LIMIT)
-        if (targets.isEmpty()) return@LaunchedEffect
-        for (song in targets) {
-            val result = runCatching {
-                cn.spw.kugou.lite.sidecar.KugouApi.probePlayability(song)
-            }.getOrDefault(cn.spw.kugou.lite.sidecar.Playability.Unknown)
-            if (result == cn.spw.kugou.lite.sidecar.Playability.NoCopyright) {
-                noCopyright = noCopyright + (song.hash to true)
-            }
-            // 间隔必须够大，否则全被频控打成「无版权」（见上面的说明）
-            kotlinx.coroutines.delay(cn.spw.kugou.lite.sidecar.KugouApi.PROBE_INTERVAL_MS)
-        }
-        if (noCopyright.isNotEmpty()) {
-            Diag.info("[detail] 无版权探测：${noCopyright.size} 首不可播")
-        }
-    }
+    // 现在的策略：**只按需判定** —— 用户点击播放时真的取流一次，
+    // 失败且原因是版权类才标「无版权」并提示（见下面 onRowClick 与
+    // BrowsePages.playSongsFromQueue 的 onUnplayable 回调）。
+    // 这样零额外请求、不会频控、也不会误标。
 
     // 首屏拉完后，如果还有剩余页就自动接着拉（用户要求一次全量加载）
     LaunchedEffect(hasMore, allSongs.size) {
