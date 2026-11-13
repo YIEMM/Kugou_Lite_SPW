@@ -1,7 +1,9 @@
 package cn.spw.kugou.lite.ui
 
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.BoxScope
 import androidx.compose.foundation.layout.ColumnScope
+import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.currentComposer
@@ -9,6 +11,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import cn.spw.kugou.lite.host.HostSalt
+import cn.spw.kugou.lite.host.SidebarHost
 
 /**
  * 宿主原生 Salt 控件的 `@Composable` 包装层。
@@ -182,4 +185,46 @@ fun SaltScreen(
 @Composable
 fun SaltBackButton(onClick: () -> Unit) {
     HostSalt.drawBack(onClick, currentComposer)
+}
+
+/**
+ * 宿主左侧栏的一行原生条目（`SidebarItemLayout`）。
+ *
+ * <h3>为什么用宿主的行而不是自绘</h3>
+ *
+ * 行高、左内边距、图标槽位、选中底色、hover 态、字体与主题色全部由宿主的
+ * `SidebarItemLayout` 提供，所以我们的条目与「音乐库 / 音效 / 设置」在视觉上
+ * 完全一致，不需要逐个 dp 去猜（猜出来的结果在不同 DPI 与主题下都会偏）。
+ *
+ * <h3>内容接收者必须是 `BoxScope`</h3>
+ *
+ * 宿主签名里 `content` 是 `Function3<BoxScope, Composer, Integer, Unit>`。
+ * 写成没有接收者的 `() -> Unit` 会编译成 `Function2`，`Method.invoke` 时直接
+ * `ClassCastException`，宿主升级成 `PLUGIN_FATAL` 并终止进程（真机踩过同类问题）。
+ * 因此这里沿用 `BoxScope.() -> Unit`，让编译器生成正确的 `Function3`。
+ *
+ * <h3>点击为什么挂在 Modifier 上</h3>
+ *
+ * 宿主自己画侧栏行时也是把 `Modifier.clickable(...)` 作为第 4 个参数传进去的
+ * （javap 实证），行组件本身不接管点击。保持一致才能得到同样的涟漪与命中区域。
+ *
+ * @param selected 是否高亮为当前页。真相只有一份：宿主导航栈（见 [PageState]）。
+ * @param icon 图标槽位内容，接收者是 `BoxScope`；宿主行会给它固定尺寸与居中。
+ */
+@Composable
+fun SaltSidebarRow(
+    label: String,
+    selected: Boolean,
+    onClick: () -> Unit,
+    icon: @Composable BoxScope.() -> Unit,
+) {
+    SidebarHost.drawRow(
+        label = label,
+        selected = selected,
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onClick),
+        content = icon,
+        composer = currentComposer,
+    )
 }

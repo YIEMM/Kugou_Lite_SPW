@@ -97,6 +97,35 @@ object NavigatorBridge {
     fun isReady(): Boolean = navigator != null
 
     /**
+     * 栈顶路由是不是本插件的页面。
+     *
+     * 侧栏选中态、以及「已经在页面上就不再压栈」都读这个。
+     *
+     * <p>**为什么不在组合期 `remember` 一个 Bool**：宿主的 `NavBackStack` 是
+     * 快照状态支撑的可变列表，每次导航都会让它变化；在组合期直接读
+     * `lastOrNull()` 就能订阅到变化。自己缓存反而会在返回键之后留下过期的
+     * 「选中」状态。</p>
+     *
+     * <p>本函数**不是** `@Composable`（在钩子回调里也能调），所以包 try-catch 合法。</p>
+     */
+    fun isOurPageOpen(): Boolean {
+        val nav = navigator ?: return false
+        return try {
+            val getter = nav.javaClass.methods.firstOrNull {
+                it.name == "getNavBackStack" && it.parameterCount == 0
+            } ?: return false
+            getter.isAccessible = true
+            @Suppress("UNCHECKED_CAST")
+            val stack = getter.invoke(nav) as? List<Any?> ?: return false
+            PageInjection.isOurPageRoute(stack.lastOrNull())
+        } catch (t: Throwable) {
+            val cause = (t as? java.lang.reflect.InvocationTargetException)?.targetException ?: t
+            Diag.warn("[$TAG] 读导航栈失败：" + (cause.message ?: cause.javaClass.simpleName))
+            false
+        }
+    }
+
+    /**
      * 在组合期读一次 Navigator 并缓存。
      *
      * **必须在 composable 上下文调用**（因为要读 `CompositionLocal.current`）。

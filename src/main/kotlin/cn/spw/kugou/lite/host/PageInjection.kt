@@ -189,6 +189,11 @@ object PageInjection {
                 PageState.titleInstalled.value = true
                 Diag.info("[$TAG] afterComposable 注册成功（$TITLE_ANCHOR_CLASS）")
             }
+
+            // ---- 4. 左侧栏原生条目（可选增强，失败只降级） ----
+            // 用户要的是「像音乐库一样常驻在左侧栏」；标题栏按钮保留作为备用入口。
+            runCatching { SidebarInjection.install() }
+                .onFailure { Diag.warn("[$TAG] 侧栏入口注入失败，已降级为仅标题栏入口：" + (it.message ?: it.javaClass.simpleName)) }
             true
         }.onFailure {
             Diag.error("[$TAG] 安装异常", it)
@@ -229,6 +234,7 @@ object PageInjection {
 
     /** 卸载。**幂等**。 */
     fun uninstall() {
+        runCatching { SidebarInjection.uninstall() }.onFailure { Diag.error("[$TAG] 侧栏卸载异常", it) }
         runCatching { NavigatorBridge.uninstall() }.onFailure { Diag.error("[$TAG] 导航桥卸载异常", it) }
         runCatching { pageHandle?.unhook() }.onFailure { Diag.error("[$TAG] 页面卸载异常", it) }
         runCatching { defaultsCompat?.close() }.onFailure { Diag.error("[$TAG] 默认参数兼容还原异常", it) }
@@ -264,7 +270,7 @@ object PageInjection {
             val route = runCatching { call.arguments.firstOrNull() }.getOrNull()
             // 注意：这里**不能**逐帧写日志。Content 每次组合都会执行，
             // 落盘 IO 会拖慢宿主帧率，且日志会迅速膨胀。只在判定结果变化时记一次。
-            val ours = isOurRoute(route)
+            val ours = isOurPageRoute(route)
             if (ours != lastWasOurs) {
                 lastWasOurs = ours
                 Diag.info(
@@ -308,8 +314,11 @@ object PageInjection {
      *
      * 这些全部是普通反射，不涉及 Compose，异常由 `runCatching` 吃掉 ——
      * 本函数**不是** `@Composable`，所以包 try-catch 完全合法。
+     *
+     * 从 `private` 放开成 `internal`：侧栏选中态也要用同一份判定
+     * （见 [NavigatorBridge.isOurPageOpen]），否则两处规则会漂移。
      */
-    private fun isOurRoute(route: Any?): Boolean {
+    internal fun isOurPageRoute(route: Any?): Boolean {
         if (route == null) return false
         return runCatching {
             if (route.javaClass.name != ROUTE_CLASS) return false
