@@ -86,4 +86,22 @@ class QueueExtendTest {
         val fresh = dedupeAppend(existing) { incoming }
         assertTrue(fresh.isEmpty())
     }
+
+    /**
+     * BUG-56：「播放全部」漏传 `needMore`，长歌单播到第一页末尾就停。
+     *
+     * 根因是判据在两个调用点各写一遍，其中一处漏了。现在共用
+     * [supportsAutoExtend]，这条测试锁住「哪些类型该续拉」。
+     */
+    @Test
+    fun `分页类型的详情页应支持自动续拉`() {
+        assertTrue(supportsAutoExtend("playlist"), "歌单有分页，必须续拉")
+        assertTrue(supportsAutoExtend("square"), "广场歌单同样分页")
+        assertTrue(supportsAutoExtend("album"), "专辑也走 requestNextPage")
+
+        assertFalse(supportsAutoExtend("rank"), "榜单一次性返回，没有下一页")
+        assertFalse(supportsAutoExtend("daily"), "每日推荐没有分页")
+        assertFalse(supportsAutoExtend("discover"), "发现区块没有分页")
+        assertFalse(supportsAutoExtend(""))
+    }
 }

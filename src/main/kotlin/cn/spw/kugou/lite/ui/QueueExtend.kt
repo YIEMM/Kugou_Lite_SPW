@@ -38,6 +38,19 @@ internal const val PLAYLIST_PROBE_LIMIT = 20
 internal const val FM_REFILL_THRESHOLD = 2
 
 /**
+ * 这类详情页是否支持「队列快播完自动续拉」。
+ *
+ * <p>**为什么抽成函数**（BUG-56）：条件原来在两个调用点各写一遍 ——
+ * 行点击传了 `needMore`，而「播放全部」漏了。于是同一个歌单，
+ * 单点一首能一直播下去，点「播放全部」播到第一页末尾就停。
+ * 两处共用同一个判据，才不会再漂移。</p>
+ *
+ * <p>榜单 / 每日推荐 / 发现区块本来就是一次性列表，没有分页，返回 false。</p>
+ */
+internal fun supportsAutoExtend(type: String): Boolean =
+    type == "playlist" || type == "square" || type == "album"
+
+/**
  * 翻完第 [pageNo] 页后，是否还有下一页。
  *
  * ## 为什么需要「位置」而不是「条数」（用户反馈的严重 bug）

@@ -305,13 +305,21 @@ fun DetailPage() {
                         // 全被剔除时给提示，而不是建一个空队列。
                         ActionChip("▶ 播放全部") {
                             val playable = list.filter { noCopyright[it.hash] != true }
+                            // BUG-56：这里过去**漏传** needMore —— 同一个歌单，
+                            // 单点一首能一直播下去，点「播放全部」播到第一页末尾就停。
+                            // 与行点击共用 supportsAutoExtend，两处判据不会再漂移。
+                            val extend: (() -> Unit)? = if (supportsAutoExtend(type)) {
+                                { requestNextPage() }
+                            } else {
+                                null
+                            }
                             when {
                                 playable.isEmpty() -> playNotice = "该列表所有歌曲都暂无版权"
                                 playable.size < list.size -> {
                                     playNotice = "已跳过 ${list.size - playable.size} 首无版权歌曲"
-                                    playSongsFromQueue(playable, 0)
+                                    playSongsFromQueue(playable, 0, extend)
                                 }
-                                else -> playSongsFromQueue(playable, 0)
+                                else -> playSongsFromQueue(playable, 0, extend)
                             }
                         }
                     }
@@ -350,7 +358,7 @@ fun DetailPage() {
                             showAlbum = showAlbum,
                             // 播放时把「自动续拉」能力交给监听器（用户反馈 #2）：
                             // 队列快播完时它会回调这里拉下一页并追加，无需用户手动点。
-                            needMore = if (type == "playlist" || type == "square") {
+                            needMore = if (supportsAutoExtend(type)) {
                                 { requestNextPage() }
                             } else {
                                 null
