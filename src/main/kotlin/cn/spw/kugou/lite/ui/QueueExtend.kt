@@ -15,6 +15,17 @@ package cn.spw.kugou.lite.ui
 /** 歌单分页默认页大小（与 `KugouApi.playlistSongs` 一致）。 */
 internal const val PLAYLIST_PAGE_SIZE = 50
 
+/**
+ * 歌单详情「一次拉全」时每页请求的条数。
+ *
+ * 实测 `/playlist/track/all` 与 `/playlist/track/all/new` 都接受 100–300，
+ * 用 100 是折中：既能一趟拿完常见歌单（<100 首），又不至于单次响应过大。
+ */
+internal const val ALL_AT_ONCE_PAGE_SIZE = 100
+
+/** 一次拉全时最多翻多少页（防御性上限，100×20 = 2000 首）。 */
+internal const val ALL_AT_ONCE_MAX_PAGES = 20
+
 /** 私人 FM 队列剩余这么多首时开始补货。 */
 internal const val FM_REFILL_THRESHOLD = 2
 

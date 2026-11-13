@@ -219,7 +219,7 @@ fun PlaylistPage() {
                                                         title = (if (pl.isFavorites) "♥ " else "") + pl.name,
                                                         subtitle = "${pl.songCount} 首",
                                                         modifier = Modifier.padding(4.dp),
-                                                    ) { PageNav.openPlaylist(pl.id, pl.name, pl.songCount) }
+                                                    ) { PageNav.openPlaylist(pl.id, pl.name, pl.songCount, pl.listId) }
                                                     // 自建歌单：行尾「…」→ 两步确认删除
                                                     // （误触即永久删歌单，必须有确认层）
                                                     if (pl.isOwn && !system.contains(pl)) {

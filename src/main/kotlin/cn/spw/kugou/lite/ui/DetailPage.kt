@@ -72,9 +72,14 @@ fun DetailPage() {
     val songs = rememberAsyncState<List<Song>>()
     val albums = rememberAsyncState<List<AlbumBrief>>()
     // 分页：以服务端声明的总数为准判断是否还有下一页。
-    // ⚠️ 不能用「本页是否拉满」—— 酷狗对 pagesize 有内部上限，
-    // 请求 50 只回 48 是常态，那样判定会让第 49 首之后的歌永远拉不到
-    // （用户反馈「50 首的歌单只显示 48 首」）。
+    // 分页状态。
+    //
+    // ## 一次拉全（用户要求）
+    //
+    // 歌单详情不再「首屏只拉 50 首 + 手动加载更多」，而是**首屏就循环拉完**
+    // （每页 100 条，最多 20 页 = 2000 首，足够覆盖常见歌单）。
+    // 理由：用户明确要求「一下子全部加载出来」；分页交互对歌单浏览没价值，
+    // 而且旧实现的「加载更多」按钮容易被忽略，看起来就像「歌单少了歌」。
     var page by remember { mutableStateOf(1) }
     var allSongs by remember { mutableStateOf(ArrayList<Song>()) }
     var hasMore by remember { mutableStateOf(true) }
@@ -96,7 +101,7 @@ fun DetailPage() {
         when (type) {
             "rank" -> songs.load { KugouApi.rankSongs(rankId) }
             "album" -> songs.load {
-                val p = KugouApi.albumSongPage(albumId, page = 1)
+                val p = KugouApi.albumSongPage(albumId, page = 1, pageSize = ALL_AT_ONCE_PAGE_SIZE)
                 serverTotal = p.total
                 firstPageRawCount = p.rawCount
                 droppedTotal = p.droppedCount
@@ -110,9 +115,14 @@ fun DetailPage() {
                 "newAlbums" -> albums.load { runCatching { DiscoverApi.newAlbums() }.getOrDefault(emptyList()) }
                 else -> songs.load { emptyList() }
             }
-            // playlist / square 同源：都用 global_collection_id 取曲目
+            // playlist / square：用大页一次拿尽可能多（listId 有值时走 /new 接口拿到完整曲目）
             else -> songs.load {
-                val p = KugouApi.playlistSongPage(playlistId, page = 1)
+                val p = KugouApi.playlistSongPage(
+                    globalCollectionId = playlistId,
+                    page = 1,
+                    pageSize = ALL_AT_ONCE_PAGE_SIZE,
+                    listId = PageNav.numericListId,
+                )
                 serverTotal = p.total
                 firstPageRawCount = p.rawCount
                 droppedTotal = p.droppedCount
@@ -120,7 +130,7 @@ fun DetailPage() {
             }
         }
     }
-    // 首页结果回填 + 判定是否还有下一页
+    // 首页结果回填 + 判定是否还有下一页（首屏用大页，所以按大页口径算位置）
     LaunchedEffect(songs.value) {
         val s = songs.value
         if (s is Async.Success) {
@@ -130,7 +140,7 @@ fun DetailPage() {
                 // 歌单有屏蔽占位：按「翻过的位置」判断
                 "playlist", "square" -> hasMoreAfterPage(
                     pageNo = 1,
-                    pageSize = PLAYLIST_PAGE_SIZE,
+                    pageSize = ALL_AT_ONCE_PAGE_SIZE,
                     rawCount = firstPageRawCount,
                     serverTotal = total,
                 )
@@ -193,13 +203,37 @@ fun DetailPage() {
             val total = if (serverTotal > 0) serverTotal else declaredCount
             hasMore = hasMoreAfterPage(
                 pageNo = next,
-                pageSize = PLAYLIST_PAGE_SIZE,
+                pageSize = ALL_AT_ONCE_PAGE_SIZE,
                 rawCount = rawCount,
                 serverTotal = total,
             )
             loadingMore = false
             Diag.info("[detail] 加载第 $next 页：${more.size} 首（累计 ${allSongs.size}，总数 $total，还有更多=$hasMore）")
-        }) { if (type == "album") KugouApi.albumSongPage(albumId, page = next) else KugouApi.playlistSongPage(playlistId, page = next) }
+            // 一次拉全：还有下一页就自动接着拉（用户明确要求「一下子全部加载出来」）
+            if (hasMore && next < ALL_AT_ONCE_MAX_PAGES) {
+                requestNextPage()
+            }
+        }) {
+            if (type == "album") {
+                KugouApi.albumSongPage(albumId, page = next, pageSize = ALL_AT_ONCE_PAGE_SIZE)
+            } else {
+                KugouApi.playlistSongPage(
+                    globalCollectionId = playlistId,
+                    page = next,
+                    pageSize = ALL_AT_ONCE_PAGE_SIZE,
+                    listId = PageNav.numericListId,
+                )
+            }
+        }
+    }
+
+    // 首屏拉完后，如果还有剩余页就自动接着拉（用户要求一次全量加载）
+    LaunchedEffect(hasMore, allSongs.size) {
+        if (hasMore && allSongs.isNotEmpty() && !loadingMore &&
+            (type == "playlist" || type == "square" || type == "album")
+        ) {
+            requestNextPage()
+        }
     }
 
     SaltScreen(title = title, onBackClick = { PageNav.backHome() }) {
@@ -207,7 +241,14 @@ fun DetailPage() {
             val showAlbum = maxWidth.value >= TABLE_ALBUM_MIN_WIDTH_DP
             Column(Modifier.fillMaxWidth().padding(bottom = 16.dp)) {
                 // ---------------------------------------------- 头部横幅
-                val list = (songs.value as? Async.Success)?.value.orEmpty()
+                // ⚠️ 展示必须用 allSongs，不能用 songs.value（用户反馈「还是显示 100 首」）。
+            //
+            // songs.value 只是**首屏第一页**的快照（100 首）；后续分页追加进 allSongs。
+            // 早期这里用 songs.value 渲染表格和 meta 文案，结果：
+            //   - 日志已经加载了 122 首
+            //   - 界面却一直显示「歌单 · 100 首（声明 122 首，22 首暂不可用）」
+            // allSongs 在首屏回填后与 songs.value 相同，所以这样就统一了。
+            val list = allSongs.ifEmpty { (songs.value as? Async.Success)?.value.orEmpty() }
                 val albumList = (albums.value as? Async.Success)?.value.orEmpty()
                 val heroCover = list.firstOrNull()?.coverUrl(240)
                     ?: albumList.firstOrNull()?.coverAt(240)

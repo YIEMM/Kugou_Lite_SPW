@@ -683,7 +683,113 @@ object KugouApi {
         playlistSongPage(globalCollectionId, page, pageSize).songs
 
     /** 同 [playlistSongs]，但额外返回总数与原始条数（供分页判定）。 */
-    fun playlistSongPage(globalCollectionId: String, page: Int = 1, pageSize: Int = 50): SongPage {
+    fun playlistSongPage(
+        globalCollectionId: String,
+        page: Int = 1,
+        pageSize: Int = 50,
+        listId: String = "",
+    ): SongPage {
+        // 有自己的数字 listid → 优先走 track/all/new（能拿到被版权屏蔽的曲目）。
+        // 实测该歌单：gid 接口 118 首、/new 接口 122 首。
+        if (pickPlaylistSource(listId, globalCollectionId) == PlaylistSource.OwnList) {
+            ownListSongPage(listId, page, pageSize)?.let { return it }
+            // /new 失败就静默回退 gid 接口，保证不空列表
+        }
+        return byGidSongPage(globalCollectionId, page, pageSize)
+    }
+
+    /**
+     * `/playlist/track/all/new` —— 自己的歌单（用 listid）。
+     *
+     * 返回完整曲目信息（含被版权屏蔽的），字段与 gid 接口不同：
+     * - `name` 是 `歌手 - 歌名.mp3` 复合格式，需 [splitCompositeName]
+     * - `timelen` 是**毫秒**
+     * - `singername` 空，歌手在 `singerinfo` 里
+     */
+    private fun ownListSongPage(listId: String, page: Int, pageSize: Int): SongPage? {
+        val json = get(
+            "/playlist/track/all/new",
+            mapOf(
+                "listid" to listId,
+                "page" to page.toString(),
+                "pagesize" to pageSize.toString(),
+            ),
+        ) ?: return null
+        if (JsonLite.asInt(JsonLite.dig(json, "status")) != 1) return null
+
+        val data = JsonLite.asObject(JsonLite.dig(json, "data")) ?: return null
+        val rawList = JsonLite.asArray(data["info"])
+            ?: JsonLite.asArray(data["songs"])
+            ?: return null
+        if (rawList.isEmpty()) return SongPage(emptyList(), JsonLite.asInt(data["count"]), 0)
+
+        val rawCount = rawList.size
+        val songs = rawList.mapNotNull { parseOwnListSong(it) }
+        val total = JsonLite.asInt(data["count"]).takeIf { it > 0 } ?: songs.size
+        Diag.info(
+            TAG,
+            "歌单(listid=$listId) 第 $page 页 [own] → 解析 ${songs.size} 首（原始 $rawCount 条），总数 $total",
+        )
+        return SongPage(songs, total, rawCount, (rawCount - songs.size).coerceAtLeast(0))
+    }
+
+    /**
+     * 解析 `/playlist/track/all/new` 的曲目。
+     *
+     * 与 [parseSong] 的区别：条目没有 `songname` / `singername`，
+     * 只有复合 `name` + `timelen`(ms) + `singerinfo[]`。
+     */
+    private fun parseOwnListSong(item: Any?): Song? {
+        val obj = JsonLite.asObject(item) ?: return null
+        val hash = firstString(obj, "hash", "Hash").orEmpty()
+        val mixSongId = firstString(obj, "mixsongid", "MixSongID").orEmpty()
+        if (hash.isBlank() && mixSongId.isBlank()) return null
+
+        val composite = firstString(obj, "name").orEmpty()
+        val (singerFromName, titleFromName) = splitCompositeName(composite)
+
+        // 歌手：优先 singerinfo[]，其次从复合名拆出来的
+        val singers = JsonLite.asArray(obj["singerinfo"]).orEmpty().mapNotNull { s ->
+            val o = JsonLite.asObject(s) ?: return@mapNotNull null
+            val n = firstString(o, "name", "author_name").orEmpty()
+            n.takeIf { it.isNotBlank() }?.let {
+                ArtistRef(name = it, id = firstString(o, "id", "author_id").orEmpty())
+            }
+        }
+        val singer = if (singers.isNotEmpty()) singers.joinToString("、") { it.name }
+        else singerFromName.ifBlank { "未知歌手" }
+
+        // 时长：timelen 是毫秒
+        val durationMs = firstLong(obj, "timelen", "time_length")
+        val durationSec = when {
+            durationMs <= 0 -> 0
+            durationMs > 100_000 -> (durationMs / 1000).toInt()
+            else -> durationMs.toInt()   // 已是秒
+        }
+
+        val title = titleFromName.ifBlank { composite }
+        return Song(
+            fileName = composite.ifBlank { title },
+            title = title,
+            singer = singer,
+            hash = hash,
+            durationSec = durationSec,
+            imageUrl = firstString(obj, "cover", "img", "imgurl", "sizable_cover"),
+            fileSize = firstLong(obj, "size", "file_size"),
+            payType = firstInt(obj, "media_pay_type", "pay_type"),
+            albumName = JsonLite.asString(JsonLite.dig(obj["albuminfo"], "name"))
+                ?: firstString(obj, "album_name"),
+            albumAudioId = firstString(obj, "album_audio_id", "mixsongid").orEmpty(),
+            artistIds = singers.mapNotNull { it.id.takeIf { i -> i.isNotBlank() } },
+            artists = singers,
+            albumId = firstString(obj, "album_id", "AlbumID").orEmpty(),
+            mixSongId = mixSongId,
+            fileId = firstLong(obj, "fileid", "file_id"),
+        )
+    }
+
+    /** `/playlist/track/all` —— 任意歌单（用 gid）；屏蔽曲目只回占位。 */
+    private fun byGidSongPage(globalCollectionId: String, page: Int, pageSize: Int): SongPage {
         if (globalCollectionId.isBlank()) return SongPage(emptyList(), 0, 0)
         val json = get(
             "/playlist/track/all",
@@ -700,7 +806,6 @@ object KugouApi {
 
         val rawCount = list.size
         val songs = list.mapNotNull { parseSong(it) }
-        // 总数：list_info.count 最准；退回 data.total
         val total = firstInt(
             JsonLite.asObject(JsonLite.dig(json, "data", "list_info")).orEmpty(),
             "count",

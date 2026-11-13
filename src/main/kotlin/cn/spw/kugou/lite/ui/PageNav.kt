@@ -42,6 +42,8 @@ object PageNav {
         val detailType: String = "",
         /** 服务端声明的曲目数（歌单/榜单的 count），0 = 未知 */
         val declaredCount: Int = 0,
+        /** 数字 listid：有它才能走 /playlist/track/all/new 拿到完整曲目（含版权屏蔽的） */
+        val numericListId: String = "",
     )
 
     /** 导航栈：`stack[0]` 是 Home 帧之下被压住的帧，最后一个元素是当前帧之下的一层。 */
@@ -95,6 +97,11 @@ object PageNav {
     var declaredCount: Int
         get() = current.declaredCount
         internal set(value) { current = current.copy(declaredCount = value) }
+
+    /** 数字 listid（走 ownList 接口用）。 */
+    var numericListId: String
+        get() = current.numericListId
+        internal set(value) { current = current.copy(numericListId = value) }
 
     /** 详情类型（playlist/rank/square/daily/discoverSong/…），任务 10 起使用。 */
     var detailType: String
@@ -160,7 +167,12 @@ object PageNav {
      * @param declaredCount 服务端声明的曲目数（listid 列表里的 count）。
      *        用来提示「声明 18 首、2 首已失效」——接口实际返回可能更少。
      */
-    fun openPlaylist(playlistId: String, title: String, declaredCount: Int = 0) {
+    fun openPlaylist(
+        playlistId: String,
+        title: String,
+        declaredCount: Int = 0,
+        numericListId: String = "",
+    ) {
         pushDetail(
             Frame(
                 KugouLiteTab.SongList,
@@ -168,6 +180,7 @@ object PageNav {
                 playlistId = playlistId,
                 detailType = "playlist",
                 declaredCount = declaredCount,
+                numericListId = numericListId,
             ),
         )
     }
