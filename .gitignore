@@ -58,3 +58,4 @@ src/main/resources/native/*.dll
 # Brainstorm visual companion session files (prototype HTML, event log)
 .superpowers/
 commit-msg.txt
+msg.txt
