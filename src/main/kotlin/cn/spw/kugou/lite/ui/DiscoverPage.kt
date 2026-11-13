@@ -173,29 +173,17 @@ fun DiscoverPage() {
                         onPlay = { songs ->
                             fmSession.markPlayed(songs)
                             // 私人 FM 续播（用户反馈 #4）：这批 5 首快播完时，
-                            // 监听器回调这里再拉一批、去重后追加进队列。
-                            // 捕获当前 session 为局部常量，避免后台线程读 Compose 状态。
+                            // 监听器回调再拉一批、去重后追加进队列。
+                            // 追加逻辑抽成 FmContinuation（BUG-02）：宿主队列
+                            // 重建必须以 TrackWatcher 当前登记队列为准，
+                            // 不能用这里捕获的初始批次（否则第二次续拉会丢掉
+                            // 之前追加、还没播完的歌）。
                             val session = fmSession
+                            val continuation = FmContinuation(loadBatch = { loadFmBatch(session) })
                             playSongsFromQueue(
                                 queue = songs,
                                 index = 0,
-                                needMore = needMore@{
-                                    val fresh = loadFmBatch(session)
-                                    if (fresh.isEmpty()) {
-                                        Diag.info("[discover] FM 续播：本批全听过，停止续拉")
-                                        return@needMore
-                                    }
-                                    // 追加进播放队列（不打断当前播放），并登记到监听器
-                                    cn.spw.kugou.lite.host.TrackWatcher.appendToQueue(fresh)
-                                    cn.spw.kugou.lite.host.PlaybackBridge.appendToQueue(
-                                        allSongs = songs + fresh,
-                                        currentTrackId = runCatching {
-                                            cn.spw.kugou.lite.host.TrackWatcher.currentTrackId()
-                                        }.getOrDefault(""),
-                                        resolveStream = { s -> KugouApi.streamUrl(s) },
-                                    )
-                                    Diag.info("[discover] FM 续播：追加 ${fresh.size} 首")
-                                },
+                                needMore = { continuation.extend() },
                             )
                         },
                         onSwitchStation = { next ->
