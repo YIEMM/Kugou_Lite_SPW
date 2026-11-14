@@ -222,11 +222,26 @@ object AudioCache {
      * 整个音频文件（那是「播放到 1 秒卡一下」的根因）。
      */
     private fun ensureMetadata(song: Song, audioFile: File, lyrics: String?) {
-        embedCover(song, audioFile)
-        if (!lyrics.isNullOrBlank()) {
-            writeLrcSidecar(audioFile, lyrics)
+        val coverWritten = embedCover(song, audioFile)
+        val lyricsWritten = if (!lyrics.isNullOrBlank()) writeLrcSidecar(audioFile, lyrics) else false
+        if (coverWritten || lyricsWritten) {
+            // 记录「本次真的写了文件」，供切歌后触达宿主重读封面/歌词。
+            // 宿主的封面链路只在切歌时读一次文件；若读取早于写入完成，
+            // 就会停在 ♪ 占位（用户反馈「第一次播放没封面没歌词、第二次正常」）。
+            lastMetadataWriteAt = System.currentTimeMillis()
+            Diag.info(TAG, "元数据已更新（封面=$coverWritten 歌词=$lyricsWritten），需通知宿主重读")
         }
     }
+
+    /**
+     * 上次写入封面/歌词的时间戳。
+     *
+     * 供 [cn.spw.kugou.lite.host.PlaybackBridge] 判断「是否需要让宿主
+     * 重新读取封面」：刚写完就必须刷新，否则播放条会一直是 ♪ 占位。
+     */
+    @Volatile
+    var lastMetadataWriteAt: Long = 0L
+        private set
 
     /**
      * 把封面写进音频文件的 ID3 APIC 帧。
@@ -235,17 +250,17 @@ object AudioCache {
      * 已有 APIC 帧时跳过（[Id3CoverWriter.writeCover] 内部判断），
      * 避免每次播放都重写整个音频文件。
      */
-    private fun embedCover(song: Song, audioFile: File) {
-        try {
+    private fun embedCover(song: Song, audioFile: File): Boolean {
+        return try {
             // 只处理支持 ID3 的容器；flac 用 vorbis comment，暂不支持
             val ext = audioFile.extension.lowercase()
-            if (ext != "mp3") return
+            if (ext != "mp3") return false
 
             // 已有封面就跳过（读写整个文件很贵）
-            if (Id3CoverWriter.hasApicFrame(audioFile)) return
+            if (Id3CoverWriter.hasApicFrame(audioFile)) return false
 
-            val coverUrl = song.coverUrl(500) ?: return
-            val cacheDir = dir ?: return
+            val coverUrl = song.coverUrl(500) ?: return false
+            val cacheDir = dir ?: return false
             val coverFile = File(cacheDir, "cover-${song.hash.ifBlank { song.albumAudioId }}.img")
 
             val bytes = if (coverFile.isFile && coverFile.length() > 0) {
@@ -254,11 +269,12 @@ object AudioCache {
                 downloadBytes(coverUrl)?.also { b ->
                     runCatching { coverFile.writeBytes(b) }
                 }
-            } ?: return
+            } ?: return false
 
             Id3CoverWriter.writeCover(audioFile, bytes, Id3CoverWriter.detectMime(bytes))
         } catch (e: Exception) {
             Diag.warn(TAG, "内嵌封面失败（不影响播放）：${e.message}")
+            false
         }
     }
 

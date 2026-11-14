@@ -116,6 +116,20 @@ private const val QUEUE_FILL_AHEAD = 3
     private val startCooldown = TrackStartPolicy.Cooldown()
 
     /**
+     * `refreshCurrentCover()` —— 让宿主重新从本地文件读封面。
+     *
+     * 宿主的封面链路是 `PlaybackService.refreshCurrentCover`
+     * → `TagParser.readImage(path)`，只在切歌时自动读一次。
+     * 首次下载时我们写 ID3 之前它已经读过，于是停在 ♪ 占位，
+     * 必须显式再触发一次。
+     */
+    @Volatile
+    private var refreshCoverMethod: java.lang.reflect.Method? = null
+
+    /** 封面刷新的冷却，避免连续切歌时反复重解码。 */
+    private val coverCooldown = CoverRefreshPolicy.Cooldown()
+
+    /**
      * 播放一首歌。
      *
      * ## 关键：宿主对「曲库外的 HTTP 曲目」经常**根本不去打开**
@@ -522,11 +536,58 @@ private const val QUEUE_FILL_AHEAD = 3
             // 加载完成后补一次 play()，印证这是宿主侧共性行为。
             // ---------------------------------------------------------------
             ensurePlaying(ctrl, song, trackId, path, hadValidPath)
+
+            // 若刚才真的写了封面/歌词，宿主的播放条还停在旧状态（或 ♪ 占位），
+            // 必须让它重读一次文件 —— 否则表现为「第一次播放没封面没歌词，
+            // 切一下别的歌再回来才正常」。判定见 CoverRefreshPolicy。
+            maybeRefreshCover(ctrl, song, trackId)
             true
         } catch (t: Throwable) {
             val cause = (t as? InvocationTargetException)?.targetException ?: t
             Diag.warn(TAG, "更新队列项失败：${cause.javaClass.simpleName}: ${cause.message}")
             false
+        }
+    }
+
+    /**
+     * 元数据刚写入时，让宿主重新读取封面（与歌词）。
+     *
+     * ## 为什么必须显式触发
+     *
+     * 宿主的封面链路 `PlaybackService.refreshCurrentCover` →
+     * `TagParser.readImage(path)` 只在**切歌**时自动跑一次。首次播放时
+     * 我们才刚下载文件并写入 APIC 帧，宿主的读取早于写入完成，于是拿到
+     * 空结果并停在 ♪ 占位 —— 这正是用户看到的「第一次没封面没歌词，
+     * 先放别的歌再回来就正常」。
+     *
+     * 参考实现 Salt-Extend-Online 的 PlaybackCoverRefresh 也是同样做法：
+     * 写完后在 **UI 线程**显式调 `refreshCurrentCover()`。
+     *
+     * ## 线程
+     *
+     * 宿主该方法会碰 Compose 状态，必须在 EDT（Swing 事件线程）执行。
+     * 用 `SwingUtilities.invokeLater` 投递，失败静默降级（封面缺失
+     * 不该影响播放）。
+     */
+    private fun maybeRefreshCover(ctrl: Any, song: Song, trackId: String) {
+        val refresh = refreshCoverMethod ?: return
+        val writeAt = AudioCache.lastMetadataWriteAt
+        if (writeAt <= 0L) return
+        // 只在「刚刚写过」时才刷新（10 秒窗口内），避免陈旧写入误触发
+        if (System.currentTimeMillis() - writeAt > 10_000L) return
+        if (!coverCooldown.shouldRefresh(trackId, System.currentTimeMillis())) return
+
+        runCatching {
+            javax.swing.SwingUtilities.invokeLater {
+                runCatching {
+                    refresh.invoke(ctrl)
+                    Diag.info(TAG, "已请求宿主重读封面「${song.title}」")
+                }.onFailure {
+                    Diag.warn(TAG, "刷新封面失败（不影响播放）：${it.message}")
+                }
+            }
+        }.onFailure {
+            Diag.warn(TAG, "投递封面刷新失败：${it.message}")
         }
     }
 
@@ -666,6 +727,16 @@ private const val QUEUE_FILL_AHEAD = 3
         }
         setSource?.isAccessible = true
 
+        // 封面刷新：宿主的封面链路只在切歌时读一次文件，
+        // 首次下载/写 ID3 时读到的是「还没有封面」的版本，于是停在 ♪ 占位。
+        // 参考实现 Salt-Extend-Online 的 PlaybackCoverRefresh 同样在写入后
+        // 显式调 refreshCurrentCover()。
+        val refreshCover = ctrl.javaClass.methods.firstOrNull {
+            it.name == "refreshCurrentCover" && it.parameterCount == 0
+        }
+        refreshCover?.isAccessible = true
+        refreshCoverMethod = refreshCover
+
         val pause = ctrl.javaClass.methods.firstOrNull {
             it.name == "pause" && it.parameterCount == 0
         }
@@ -694,7 +765,8 @@ private const val QUEUE_FILL_AHEAD = 3
         Diag.info(
             TAG,
             "已解析播放控制器：setPlaybackAudioSource=${setSource != null} " +
-                "updateMediaItems=${updateItems != null} pause=${pause != null}",
+                "updateMediaItems=${updateItems != null} pause=${pause != null} " +
+                "refreshCurrentCover=${refreshCover != null}",
         )
         return ctrl
     }
