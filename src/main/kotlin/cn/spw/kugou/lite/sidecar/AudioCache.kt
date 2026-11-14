@@ -391,4 +391,95 @@ object AudioCache {
 
     /** 当前缓存占用（字节）。 */
     fun usage(): Long = dir?.listFiles()?.sumOf { it.length() } ?: 0L
+
+    /**
+     * 列出音频缓存条目（缓存管理页用）。
+     *
+     * @return 按「越新越靠前」排序的条目；目录未配置返回空。
+     */
+    fun entries(): List<CacheEntry> = dir?.let { cacheEntries(it) } ?: emptyList()
+
+    /**
+     * 删除一条缓存（音频 + 随附歌词）。
+     *
+     * @return 音频文件是否删除成功（不存在视为失败）
+     */
+    fun deleteEntry(audio: File): Boolean {
+        val cacheDir = dir ?: return false
+        if (!cacheDir.equals(audio.parentFile)) return false
+        return deleteCacheEntry(cacheDir, audio)
+    }
+}
+
+/** 一条音频缓存条目：音频文件 + 随附歌词 sidecar。 */
+data class CacheEntry(
+    /** 音频文件（`<hash>-<音质>.<ext>`）。 */
+    val audio: File,
+    /** 同名歌词 sidecar（`.lrc` / `.krc`），可能为空。 */
+    val sidecars: List<File>,
+    /** 从文件名解析的音质（如 `128` / `320` / `flac`）。 */
+    val quality: String,
+    /** 音频扩展名（小写）。 */
+    val ext: String,
+    /** 音频 + 全部 sidecar 的总字节数。 */
+    val totalBytes: Long,
+)
+
+/**
+ * 扫描缓存目录，列出可播放的音频条目（[CacheEntry]）。
+ *
+ * 判定规则：
+ * - 扩展名 ∈ [CACHE_AUDIO_EXTS] 的才是音频（排除 `cover-*`、`*.part`、
+ *   孤立的 `.lrc`/`.krc`、杂项文件）；
+ * - 同名 `.lrc`/`.krc` 归入同一条目，大小一起计入 totalBytes。
+ *
+ * 纯函数（目录由调用方给定），单测直接对临时目录断言。
+ */
+internal fun cacheEntries(dir: File): List<CacheEntry> {
+    val files = dir.listFiles() ?: return emptyList()
+    val sidecarExts = setOf("lrc", "krc")
+    val audioFiles = files.filter { f ->
+        val ext = f.extension.lowercase()
+        ext in CACHE_AUDIO_EXTS && !f.name.startsWith("cover-") && !f.name.endsWith(".part")
+    }
+    return audioFiles
+        .map { audio ->
+            val sidecars = files.filter { s ->
+                s.isFile &&
+                    s.extension.lowercase() in sidecarExts &&
+                    s.nameWithoutExtension == audio.nameWithoutExtension
+            }
+            // 文件名形如 `<stem>-<音质>.<ext>`；stem 是净化后的 hash（不含 `-`），
+            // 取最后一个 `-` 之后为音质；解析不出时如实留空。
+            val base = audio.nameWithoutExtension
+            val quality = base.substringAfterLast('-', "")
+            val bytes = audio.length() + sidecars.sumOf { it.length() }
+            CacheEntry(
+                audio = audio,
+                sidecars = sidecars,
+                quality = quality,
+                ext = audio.extension.lowercase(),
+                totalBytes = bytes,
+            )
+        }
+        .sortedByDescending { it.audio.lastModified() }
+}
+
+/**
+ * 删除一条缓存条目：音频 + 同名歌词 sidecar。
+ *
+ * @return 音频文件是否删除成功
+ */
+internal fun deleteCacheEntry(dir: File, audio: File): Boolean {
+    if (audio.parentFile != dir) return false
+    val base = audio.nameWithoutExtension
+    val sidecars = dir.listFiles()?.filter {
+        it.extension.lowercase() in setOf("lrc", "krc") && it.nameWithoutExtension == base
+    } ?: emptyList()
+    val audioOk = audio.delete()
+    sidecars.forEach { runCatching { it.delete() } }
+    if (audioOk) {
+        Diag.info("cache", "已删除缓存 ${audio.name}（含歌词 ${sidecars.size} 个）")
+    }
+    return audioOk
 }

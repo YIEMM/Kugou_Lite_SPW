@@ -105,6 +105,11 @@ private fun KugouLiteBody() {
             SettingsPage()
         }
 
+        // 缓存管理：从设置页 push 进入，back 回设置（B1）
+        KugouLiteTab.CacheManage -> SubPage(title = "缓存管理", onBack = { PageNav.backHome() }) {
+            CacheManagePage()
+        }
+
         KugouLiteTab.Square -> SubPage(title = "歌单广场", onBack = { PageNav.backHome() }) {
             SquarePage()
         }

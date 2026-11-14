@@ -265,6 +265,9 @@ enum class KugouLiteTab {
     /** 设置。 */
     Settings,
 
+    /** 缓存管理（设置页进入，B1）。 */
+    CacheManage,
+
     /** 歌单广场。 */
     Square,
 

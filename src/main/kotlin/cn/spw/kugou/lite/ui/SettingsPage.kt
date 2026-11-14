@@ -79,14 +79,20 @@ fun SettingsPage() {
 
         SaltCard(Modifier.fillMaxWidth().padding(horizontal = 16.dp)) {
             Row(
-                Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp),
+                Modifier
+                    .fillMaxWidth()
+                    .clickable {
+                        Diag.info("[settings] 前往缓存管理")
+                        PageNav.push(KugouLiteTab.CacheManage)
+                    }
+                    .padding(horizontal = 16.dp, vertical = 12.dp),
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.SpaceBetween,
             ) {
                 Column {
                     Text3("音频缓存", color = KugouTheme.colors.text)
                     Text3(
-                        "已下载的歌曲与封面",
+                        "已下载的歌曲与封面 · 点按可逐条管理",
                         color = KugouTheme.colors.muted,
                         modifier = Modifier.padding(top = 2.dp),
                     )
