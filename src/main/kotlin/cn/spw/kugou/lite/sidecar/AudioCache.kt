@@ -42,8 +42,11 @@ import java.net.URI
  * - v4：头部始终补 `[offset:]`、丢弃酷狗内部 `[id:]`。
  *   缺 `[offset:]` 的歌词宿主会判为「无歌词」（用户反馈「人是猫」）。
  *   旧缓存带着 v3 的戳，必须升级版本号才能让它们被重写。
+ * - v5：丢弃 `[total:]`。它的值是 0 时宿主把歌词时长算成 0，
+ *   直接判为「无歌词」（用户反馈「第一次播放仍然没有歌词」，
+ *   带 `[total:0]` 的文件全部中招）。
  */
-const val LRC_GENERATOR_VERSION = "v4"
+const val LRC_GENERATOR_VERSION = "v5"
 
 /** 生成器标记，写进 `[by:]` 标签。 */
 private const val GENERATOR_TAG = "KugouLite/$LRC_GENERATOR_VERSION"

@@ -217,9 +217,14 @@ object KrcLyrics {
             if (t.isEmpty()) continue
             if (t.startsWith("[") && !LINE_PATTERN.matches(t)) {
                 if (t.startsWith("[id:")) continue
+                // [total:] 是上游 KRC 的「歌词总时长」字段，值常见为 0。
+                // 宿主把它当歌词时长解析，0 会被判为无效歌词 ——
+                // 用户反馈「播放时显示无歌词」的 3 个文件全部带 [total:0]。
+                // 该标签对宿主没有正面作用，直接丢弃。
+                if (t.startsWith("[total:")) continue
                 if (t.startsWith("[offset:")) sawOffset = true
                 if (t.startsWith("[ti:") || t.startsWith("[ar:") ||
-                    t.startsWith("[al:") || t.startsWith("[by:") || t.startsWith("[total:") ||
+                    t.startsWith("[al:") || t.startsWith("[by:") ||
                     t.startsWith("[offset:")
                 ) {
                     out.appendLine(t)
