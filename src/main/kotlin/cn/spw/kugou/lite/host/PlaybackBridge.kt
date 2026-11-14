@@ -422,7 +422,9 @@ private const val QUEUE_FILL_AHEAD = 3
                         continue
                     }
                     // 先取歌词，再让 AudioCache 一并补齐（音频 + 封面 + 逐字歌词）
-                    val lrc = runCatching { KugouApi.lyricByHash(s.hash, s.title, s.singer) }.getOrNull()
+                    val lrc = runCatching {
+                        KugouApi.lyricByHash(KugouApi.lyricKeyFor(s.hash, s.albumAudioId), s.title, s.singer)
+                    }.getOrNull()
                     val local = AudioCache.ensureLocal(s, stream, lrc)
                     val path = local?.absolutePath ?: stream.url
                     newMediaItem(s, buildTrackId(s), path)?.let { updateItem(ctrl, it) }

@@ -6,6 +6,7 @@ import cn.spw.kugou.lite.sidecar.Id3CoverWriter
 import cn.spw.kugou.lite.sidecar.KugouApi
 import cn.spw.kugou.lite.sidecar.Song
 import cn.spw.kugou.lite.sidecar.StreamInfo
+import java.io.File
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicReference
@@ -292,6 +293,10 @@ object TrackWatcher {
         if (cached != null) {
             Diag.info(TAG, "命中本地缓存，跳过取流「${song.title}」")
             streamRetry.onResolved()
+            // 补齐元数据：缓存命中只能说明**音频**在，封面/歌词可能仍然缺失。
+            // 早期版本（修好 hash 回退之前）缓存的歌就没有 .lrc，而这里直接
+            // return 会让它们永远补不上 —— 表现为「这些歌一直没歌词」。
+            backfillMetadata(song, cached)
             PlaybackBridge.rebindCurrent(song, FAKE_STREAM_FOR_LOCAL, cached)
             return
         }
@@ -305,9 +310,43 @@ object TrackWatcher {
         }
         streamRetry.onResolved()
         // 先取歌词，再让 AudioCache 一并补齐（音频 + 封面 + 逐字歌词）
-        val lrc = runCatching { KugouApi.lyricByHash(song.hash, song.title, song.singer) }.getOrNull()
+        val lrc = runCatching {
+            KugouApi.lyricByHash(KugouApi.lyricKeyFor(song.hash, song.albumAudioId), song.title, song.singer)
+        }.getOrNull()
         val local = AudioCache.ensureLocal(song, stream, lrc)
         PlaybackBridge.rebindCurrent(song, stream, local)
+    }
+
+    /**
+     * 缓存命中时补齐封面 / 歌词。
+     *
+     * ## 为什么需要
+     *
+     * 「命中本地缓存」只保证**音频**在，不保证封面和歌词也在。早期版本
+     * 取歌词用的是裸 `song.hash`，而榜单/专辑接口常常不给 hash —— 那批
+     * 歌缓存下来时没有 .lrc，之后每次都走缓存命中路径直接 return，
+     * 于是永远不会补上，表现为「这些歌一直没歌词」。
+     *
+     * [AudioCache.ensureMetadata] 本身是幂等的：已有 APIC / 新鲜 .lrc
+     * 就跳过，所以这里可以无脑调用，代价只有一次文件头读取。
+     *
+     * 取歌词失败不致命（只是没歌词），异常一律吞掉。
+     */
+    private fun backfillMetadata(song: Song, audioFile: File) {
+        try {
+            // 已有 APIC 且 .lrc 新鲜 → 什么都不用做，直接跳过，避免无谓的接口请求。
+            if (Id3CoverWriter.hasApicFrame(audioFile) &&
+                AudioCache.hasFreshLyrics(audioFile)
+            ) {
+                return
+            }
+            val lrc = runCatching {
+                KugouApi.lyricByHash(KugouApi.lyricKeyFor(song.hash, song.albumAudioId), song.title, song.singer)
+            }.getOrNull()
+            AudioCache.ensureMetadata(song, audioFile, lrc)
+        } catch (t: Throwable) {
+            Diag.warn(TAG, "补齐元数据失败（不影响播放）：${t.javaClass.simpleName}: ${t.message}")
+        }
     }
 
     /**

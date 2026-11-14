@@ -224,7 +224,21 @@ object AudioCache {
      * 每一步都先检查是否已存在，已存在就跳过 —— 避免每次播放都重写
      * 整个音频文件（那是「播放到 1 秒卡一下」的根因）。
      */
-    private fun ensureMetadata(song: Song, audioFile: File, lyrics: String?) {
+    /**
+     * 音频文件旁挂的 `.lrc` 是否已存在且版本新鲜。
+     *
+     * 供缓存命中路径判断「还需不需要去接口补歌词」——已有新鲜歌词就跳过，
+     * 避免每次切歌都为同一首歌发一次歌词请求。
+     */
+    fun hasFreshLyrics(audioFile: File): Boolean {
+        val lrc = File(audioFile.parentFile, audioFile.nameWithoutExtension + ".lrc")
+        if (!lrc.isFile || lrc.length() <= 100) return false
+        return runCatching {
+            !needsLrcRewrite(lrc.readText(Charsets.UTF_8))
+        }.getOrDefault(false)
+    }
+
+    fun ensureMetadata(song: Song, audioFile: File, lyrics: String?) {
         val coverWritten = embedCover(song, audioFile)
         val lyricsWritten = if (!lyrics.isNullOrBlank()) writeLrcSidecar(audioFile, lyrics) else false
         if (coverWritten || lyricsWritten) {

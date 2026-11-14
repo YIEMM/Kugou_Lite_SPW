@@ -348,12 +348,29 @@ object KugouApi {
      * **只播这首就用这首的歌词**，没有译文就不显示（或显示罗马音兜底）。
      */
     fun lyricByHash(hash: String, title: String = "", singer: String = ""): String? {
+        if (hash.isBlank()) return null
         val best = searchLyric(hash).firstOrNull() ?: return null
         // 先试 KRC（逐字）
         lyric(best, fmt = "krc")?.takeIf { it.isNotBlank() }?.let { return it }
         // 退回 LRC（逐行）
         return lyric(best, fmt = "lrc")
     }
+
+    /**
+     * 取歌词用的 key：hash 优先，空白时退回 albumAudioId。
+     *
+     * ## 为什么要回退（用户反馈「加载无缓存音乐都会显示无歌词」）
+     *
+     * 榜单 / 专辑等接口**不一定给 hash**（只给 album_audio_id），此时曲目的
+     * `hash` 是空串。取流与收藏都用了 `hash.ifBlank { albumAudioId }`
+     * 这套回退，唯独取歌词漏了 —— 空串请求 `/search/lyric` 必然返回空，
+     * 于是首次播放的歌统统没有歌词，等下次播放命中已缓存歌词才正常。
+     *
+     * 实测日志里那批「歌词=false」的歌，缓存名就是纯数字：
+     * `386662632-128.mp3`，正是 albumAudioId。
+     */
+    fun lyricKeyFor(hash: String, albumAudioId: String): String =
+        hash.ifBlank { albumAudioId }.trim()
 
     /**
      * 仅供测试：把一段 JSON 对象解析成 [Song]。
