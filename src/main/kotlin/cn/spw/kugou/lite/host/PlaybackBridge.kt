@@ -104,6 +104,18 @@ private const val QUEUE_FILL_AHEAD = 3
     private var playMethod: java.lang.reflect.Method? = null
 
     /**
+     * 每首曲目**上一次入队时**的 path（trackId → path）。
+     *
+     * 切歌时用它判断「宿主之前有没有机会加载这一项」：
+     * 空串 = 当时是空占位，宿主加载必然失败 → 需要重建音频源。
+     * 见 [TrackStartPolicy]。
+     */
+    private val lastQueuedPath = java.util.concurrent.ConcurrentHashMap<String, String>()
+
+    /** 主动启动播放的冷却，避免宿主状态抖动时反复打断刚起的播放。 */
+    private val startCooldown = TrackStartPolicy.Cooldown()
+
+    /**
      * 播放一首歌。
      *
      * ## 关键：宿主对「曲库外的 HTTP 曲目」经常**根本不去打开**
@@ -274,6 +286,16 @@ private const val QUEUE_FILL_AHEAD = 3
             // 导致同一首歌被加载两次：宿主开始播 0.3 秒后，
             // 第二次加载把它重置回 0 秒重新开始 —— 就是用户说的「抖动」。
             setQueueList?.invoke(ctrl, items, idx)
+
+            // 记录每项入队时的 path：切歌时用它判断宿主此前能否加载成功
+            // （空占位 = 加载必然失败 → 需要重建音频源）。见 TrackStartPolicy。
+            songs.forEachIndexed { i, s ->
+                lastQueuedPath[buildTrackId(s)] =
+                    if (i == idx) currentPath else (cachedLocalPath(s) ?: "")
+            }
+            // 新队列 = 新上下文，冷却作废
+            startCooldown.reset()
+
             prepareMethod?.invoke(ctrl)
             playMethod?.invoke(ctrl)
 
@@ -390,6 +412,7 @@ private const val QUEUE_FILL_AHEAD = 3
                     val local = AudioCache.ensureLocal(s, stream, lrc)
                     val path = local?.absolutePath ?: stream.url
                     newMediaItem(s, buildTrackId(s), path)?.let { updateItem(ctrl, it) }
+                    lastQueuedPath[buildTrackId(s)] = path
                     Diag.info(TAG, "队列补齐 ${i + 1}/${songs.size}「${s.title}」")
                 } catch (t: Throwable) {
                     dead.add(s)
@@ -475,17 +498,76 @@ private const val QUEUE_FILL_AHEAD = 3
                 Diag.warn(TAG, "重新绑定失败：既无本地文件也无流地址「${song.title}」")
                 return false
             }
+
+        // 切歌发生时，这一项在宿主队列里原本有没有可用地址？
+        // 这决定了下面的启动方式（见 TrackStartPolicy 的注释表格）。
+        val hadValidPath = lastQueuedPath[trackId].orEmpty().isNotBlank()
+
         return try {
             val item = newMediaItem(song, trackId, path)
             if (item != null) {
                 updateItem(ctrl, item)
+                lastQueuedPath[trackId] = path
                 Diag.info(TAG, "已更新队列项「${song.title}」path=${if (localFile != null) "本地" else "HTTP"}")
             }
+
+            // ---------------------------------------------------------------
+            // 关键修复：updateMediaItems 只改元数据，**不会启动播放**。
+            //
+            // 真机证据（2026-11-14 21:09）：点「下一首」后这里只更新了队列项，
+            // 播放栏停在 ♪ 占位、▶ 未播放、进度 0 秒。宿主的 next() 只移动索引，
+            // 不会因为队列项的 path 变成有效文件就自动加载音频。
+            //
+            // 参考实现 Salt-Extend-Online 的 SaltPlaybackStartBindings 同样在
+            // 加载完成后补一次 play()，印证这是宿主侧共性行为。
+            // ---------------------------------------------------------------
+            ensurePlaying(ctrl, song, trackId, path, hadValidPath)
             true
         } catch (t: Throwable) {
             val cause = (t as? InvocationTargetException)?.targetException ?: t
             Diag.warn(TAG, "更新队列项失败：${cause.javaClass.simpleName}: ${cause.message}")
             false
+        }
+    }
+
+    /**
+     * 切歌后确保音频真的开始播放。
+     *
+     * 分两种动作（判定见 [TrackStartPolicy]）：
+     * - [TrackStartPolicy.Action.RebindAndPlay]：path 之前是空占位，
+     *   宿主加载必然失败 → 重建音频源 + prepare + play；
+     * - [TrackStartPolicy.Action.PlayOnly]：path 一直有效，宿主已加载 →
+     *   只补 play()，避免重复加载导致「播 0.3 秒跳回 0 秒」的抖动。
+     *
+     * 同一曲目有冷却（3 秒）防止宿主状态抖动时反复打断刚起的播放。
+     */
+    private fun ensurePlaying(
+        ctrl: Any,
+        song: Song,
+        trackId: String,
+        path: String,
+        hadValidPath: Boolean,
+    ) {
+        val action = TrackStartPolicy.decide(hadValidPath, hasPlayablePath = path.isNotBlank())
+        if (action == TrackStartPolicy.Action.None) return
+        if (!startCooldown.shouldStart(trackId, System.currentTimeMillis())) {
+            Diag.info(TAG, "跳过重复启动「${song.title}」（同一首冷却中）")
+            return
+        }
+        when (action) {
+            TrackStartPolicy.Action.None -> Unit
+            TrackStartPolicy.Action.PlayOnly -> {
+                runCatching { prepareMethod?.invoke(ctrl) }
+                runCatching { playMethod?.invoke(ctrl) }
+                Diag.info(TAG, "已补启动播放「${song.title}」（path 原本有效，不重载）")
+            }
+            TrackStartPolicy.Action.RebindAndPlay -> {
+                runCatching { pauseMethod?.invoke(ctrl) }
+                setAudioSourceMethod?.invoke(ctrl, trackId, path, 0L, true)
+                runCatching { prepareMethod?.invoke(ctrl) }
+                runCatching { playMethod?.invoke(ctrl) }
+                Diag.info(TAG, "已重建音频源并播放「${song.title}」")
+            }
         }
     }
 
