@@ -39,8 +39,11 @@ import java.net.URI
  * - v2：KRC `[language:]` 译文提取（type=1）
  * - v3：加版本戳 + 陈旧缓存失效。v2 之前写出的文件没有戳，
  *   而「已有非空 .lrc 就跳过」让它们永远不会被新代码覆盖。
+ * - v4：头部始终补 `[offset:]`、丢弃酷狗内部 `[id:]`。
+ *   缺 `[offset:]` 的歌词宿主会判为「无歌词」（用户反馈「人是猫」）。
+ *   旧缓存带着 v3 的戳，必须升级版本号才能让它们被重写。
  */
-const val LRC_GENERATOR_VERSION = "v3"
+const val LRC_GENERATOR_VERSION = "v4"
 
 /** 生成器标记，写进 `[by:]` 标签。 */
 private const val GENERATOR_TAG = "KugouLite/$LRC_GENERATOR_VERSION"

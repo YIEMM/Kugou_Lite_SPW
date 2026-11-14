@@ -202,18 +202,32 @@ object KrcLyrics {
         val cleaned = sanitize(krc)
         val out = StringBuilder()
 
-        // 保留头部元信息
+        // 保留头部元信息。
+        //
+        // 两条硬性要求（见 EnhancedLrcTagTest）：
+        // 1. **[offset:]** 必须存在。用户反馈「人是猫」显示无歌词：该曲的
+        //    .lrc 内容完全正常，但上游 KRC 头部没有 [offset:]，而缓存里
+        //    缺 [offset:] 的 4 个文件恰好就是显示无歌词的那 4 首
+        //    （其余 31 首都有 [offset:0]）。缺省补 0。
+        // 2. **[id:]** 要丢弃。它是酷狗内部字段（值形如 $00000000），
+        //    对宿主没有意义，且和缺失的 [offset:] 总是同时出现。
+        var sawOffset = false
         for (line in cleaned.lineSequence()) {
             val t = line.trim()
             if (t.isEmpty()) continue
             if (t.startsWith("[") && !LINE_PATTERN.matches(t)) {
-                if (t.startsWith("[id:") || t.startsWith("[ti:") || t.startsWith("[ar:") ||
+                if (t.startsWith("[id:")) continue
+                if (t.startsWith("[offset:")) sawOffset = true
+                if (t.startsWith("[ti:") || t.startsWith("[ar:") ||
                     t.startsWith("[al:") || t.startsWith("[by:") || t.startsWith("[total:") ||
                     t.startsWith("[offset:")
                 ) {
                     out.appendLine(t)
                 }
             }
+        }
+        if (!sawOffset) {
+            out.appendLine("[offset:0]")
         }
 
         // 逐行转换。翻译数组与「有时间的歌词行」按顺序对齐，
