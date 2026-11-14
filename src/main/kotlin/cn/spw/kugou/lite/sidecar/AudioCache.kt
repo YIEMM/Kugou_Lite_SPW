@@ -329,6 +329,18 @@ object AudioCache {
      */
     fun writeLrcSidecar(audioFile: File, lyrics: String): Boolean {
         if (lyrics.isBlank()) return false
+        // 队列预取线程与切歌线程可能同时为同一首歌写歌词：串行化，
+        // 避免「A 刚写完、B 读到旧版本又重写」的互相覆盖。
+        val lock = lrcWriteLocks.computeIfAbsent(audioFile.absolutePath) { Any() }
+        return synchronized(lock) {
+            writeLrcSidecarLocked(audioFile, lyrics)
+        }
+    }
+
+    /** 每条路径一把锁；条目很少（只在播放过的曲目上创建）。 */
+    private val lrcWriteLocks = java.util.concurrent.ConcurrentHashMap<String, Any>()
+
+    private fun writeLrcSidecarLocked(audioFile: File, lyrics: String): Boolean {
         return try {
             val isKrc = KrcLyrics.isKrc(lyrics)
             val text = withGeneratorTag(if (isKrc) KrcLyrics.toEnhancedLrc(lyrics) else lyrics)
@@ -342,13 +354,19 @@ object AudioCache {
                 return true
             }
 
-            lrc.writeText(text, Charsets.UTF_8)
+            // 原子写：先写 .part 再 rename。
+            //
+            // 用户反馈「偶发无歌词，重新读取缓存就好」：宿主的歌词加载在另一条
+            // 协程上，若撞上 writeText 的写入过程，会读到半截内容（甚至空文件），
+            // 于是判为「无歌词」。音频下载早就用 .part + rename 的原子写法，
+            // 歌词却漏了 —— 这就是「有概率触发」的来源。
+            atomicWriteText(lrc, text)
 
             if (isKrc) {
                 val krcFile = File(audioFile.parentFile, audioFile.nameWithoutExtension + ".krc")
                 // .krc 也随版本失效，保证排查用的原文与 .lrc 同源
                 if (!krcFile.isFile || needsLrcRewrite(krcFile.readText(Charsets.UTF_8))) {
-                    runCatching { krcFile.writeText(withGeneratorTag(KrcLyrics.sanitize(lyrics)), Charsets.UTF_8) }
+                    runCatching { atomicWriteText(krcFile, withGeneratorTag(KrcLyrics.sanitize(lyrics))) }
                 }
                 Diag.info(TAG, "已写入逐字歌词 ${lrc.name}（${text.length} 字符，KRC 源 ${lyrics.length} 字符，译文=${KrcLyrics.extractTranslation(lyrics).size} 行）")
             } else {
@@ -360,6 +378,41 @@ object AudioCache {
             false
         }
     }
+
+    /**
+     * 原子写文本文件：先写 `<name>.part`，成功后再改名覆盖目标。
+     *
+     * ## 为什么不用 writeText
+     *
+     * `File.writeText` 会先把文件截断为 0 再逐块写入。宿主的歌词加载在
+     * 另一条协程上，短窗口内读到的是空文件或半截内容 → 判为「无歌词」。
+     * 用户观察到的「有概率没歌词、重新读取缓存就好」正是这个竞态。
+     *
+     * 改名在同目录内是原子的（Windows 用 MoveFileEx 的 replace 语义），
+     * 读者要么看到完整旧内容、要么看到完整新内容。
+     *
+     * 失败时清理临时文件，不留下垃圾。
+     */
+    private fun atomicWriteText(target: File, text: String) {
+        val part = File(target.parentFile, target.name + ".part")
+        try {
+            part.writeText(text, Charsets.UTF_8)
+            if (!part.renameTo(target)) {
+                // 某些环境 rename 不能覆盖已存在文件：先删再改名
+                target.delete()
+                if (!part.renameTo(target)) {
+                    throw IllegalStateException("rename 失败：${part.name} -> ${target.name}")
+                }
+            }
+        } catch (t: Throwable) {
+            runCatching { part.delete() }
+            throw t
+        }
+    }
+
+    /** 仅供测试：走真实写入路径，验证原子性。 */
+    internal fun writeLrcSidecarForTest(audioFile: File, lyrics: String): Boolean =
+        writeLrcSidecar(audioFile, lyrics)
 
     /** 下载到内存（封面通常几十 KB）。 */
     private fun downloadBytes(url: String): ByteArray? {
