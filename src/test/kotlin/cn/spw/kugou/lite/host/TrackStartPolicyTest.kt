@@ -6,42 +6,29 @@ import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
 /**
- * 切歌后「启动播放」的判定（用户反馈：点下一首无法正常播放）。
+ * 切歌后「启动播放」的判定。
  *
- * ## 缺陷现场（2026-11-14 21:09 真机日志）
+ * ## 第一次修复（60c2174）留下的回归
  *
- * 队列建好时 `队列补齐 2/5` 已经给下一首写好了本地 path；用户点「下一首」后
- * `TrackWatcher` 只做了 `updateMediaItems`（日志 `已更新队列项 path=本地`），
- * 播放栏仍停在 ♪ 占位、▶ 未播放、进度 0 秒 —— 宿主换了当前索引，但**没有启动音频**。
+ * 用户反馈：加载有缓存的歌曲时会加载 2 次。
  *
- * ## 与参考实现的一致性
+ * 原因：缓存命中时走了 PlayOnly，里面调了 prepare() + play()。
+ * 但宿主自己切到该曲目时已经加载过（path 一直有效），再 prepare()
+ * 一次就等于第二次加载 —— 表现为重复加载 / 进度重置。
  *
- * Salt-Extend-Online 的 `SaltPlaybackStartBindings` 在播放器加载完成回调里
- * **再 `play()` 一次**，并用 `PlaybackStartGate` 保证这次启动意图不被后续
- * 用户操作覆盖。说明「宿主不会因为我们更新了队列项就自动开播」是共性问题。
- *
- * ## 为什么区分两种启动方式
- *
- * 早期实现踩过「抖动」：在 `setPlaybackQueue` 之后又
- * `setPlaybackAudioSource + prepare + play`，同一首被加载两次，
- * 播放 0.3 秒后跳回 0 秒。
- *
- * 所以只在**宿主没有机会加载**时才重建音频源：
- * - path 之前是空占位 → 宿主必然加载失败 → 需要 `setPlaybackAudioSource + prepare + play`
- * - path 本来就是有效本地文件 → 宿主已经加载过，只是没开播 → 只补 `play()`，不重载
+ * 参考实现 Salt-Extend-Online 的 SaltPlaybackStartBindings 只在
+ * onLoaded 回调里补 play()，从不调 prepare()，印证了这一点。
  */
 class TrackStartPolicyTest {
 
     @Test
     fun `path 从空到有效时重建音频源并播放`() {
-        val d = TrackStartPolicy.decide(hadValidPath = false)
-        assertEquals(TrackStartPolicy.Action.RebindAndPlay, d)
+        assertEquals(TrackStartPolicy.Action.RebindAndPlay, TrackStartPolicy.decide(hadValidPath = false))
     }
 
     @Test
     fun `path 本来就有效时只补 play 不重载`() {
-        val d = TrackStartPolicy.decide(hadValidPath = true)
-        assertEquals(TrackStartPolicy.Action.PlayOnly, d)
+        assertEquals(TrackStartPolicy.Action.PlayOnly, TrackStartPolicy.decide(hadValidPath = true))
     }
 
     @Test
@@ -51,10 +38,34 @@ class TrackStartPolicyTest {
     }
 
     @Test
+    fun `PlayOnly 不得重新 prepare 音频源`() {
+        val plan = TrackStartPolicy.plan(TrackStartPolicy.Action.PlayOnly)
+        assertFalse(plan.rebuildSource, "不应重建音频源")
+        assertFalse(plan.prepare, "不应再 prepare，那会造成第二次加载")
+        assertTrue(plan.play, "只需补一次 play")
+    }
+
+    @Test
+    fun `RebindAndPlay 才需要 prepare`() {
+        val plan = TrackStartPolicy.plan(TrackStartPolicy.Action.RebindAndPlay)
+        assertTrue(plan.rebuildSource)
+        assertTrue(plan.prepare)
+        assertTrue(plan.play)
+    }
+
+    @Test
+    fun `None 什么都不做`() {
+        val plan = TrackStartPolicy.plan(TrackStartPolicy.Action.None)
+        assertFalse(plan.rebuildSource)
+        assertFalse(plan.prepare)
+        assertFalse(plan.play)
+    }
+
+    @Test
     fun `同一首在冷却期内不重复启动`() {
         val c = TrackStartPolicy.Cooldown(cooldownMs = 3_000)
         assertTrue(c.shouldStart("kugou-A", nowMs = 0), "首次切到该曲应启动")
-        assertFalse(c.shouldStart("kugou-A", nowMs = 1_000), "冷却期内不重复启动，避免抖动")
+        assertFalse(c.shouldStart("kugou-A", nowMs = 1_000), "冷却期内不重复启动")
         assertTrue(c.shouldStart("kugou-B", nowMs = 1_200), "换曲目立刻放行")
         assertTrue(c.shouldStart("kugou-A", nowMs = 4_000), "冷却过后允许再次启动")
     }

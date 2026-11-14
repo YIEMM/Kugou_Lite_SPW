@@ -59,6 +59,46 @@ internal object TrackStartPolicy {
     }
 
     /**
+     * 每个动作具体要做哪几步。
+     *
+     * ## 为什么单独抽出来
+     *
+     * 用户反馈「加载有缓存的歌曲时会加载 2 次」：缓存命中走了 PlayOnly，
+     * 而它当时调了 `prepare()`。宿主切到该曲目时**已经加载过**（path
+     * 一直有效），再 prepare 一次就是第二次加载 —— 表现为重复加载、
+     * 进度被重置。
+     *
+     * 参考实现 Salt-Extend-Online 的 SaltPlaybackStartBindings 只在
+     * onLoaded 回调里补 play()，从不调 prepare()。
+     *
+     * 所以「要不要 prepare」由本函数显式声明，调用方不再自己决定：
+     *
+     * | 动作 | 重建源 | prepare | play |
+     * | --- | --- | --- | --- |
+     * | [Action.None] | 否 | 否 | 否 |
+     * | [Action.PlayOnly] | 否 | **否** | 是 |
+     * | [Action.RebindAndPlay] | 是 | 是 | 是 |
+     */
+    fun plan(action: Action): Plan = when (action) {
+        Action.None -> Plan(rebuildSource = false, prepare = false, play = false)
+        Action.PlayOnly -> Plan(rebuildSource = false, prepare = false, play = true)
+        Action.RebindAndPlay -> Plan(rebuildSource = true, prepare = true, play = true)
+    }
+
+    /**
+     * 一次切歌要执行的具体步骤。
+     *
+     * @param rebuildSource 是否重设 `setPlaybackAudioSource`
+     * @param prepare 是否调 `prepare()` —— 只有换源后才需要
+     * @param play 是否调 `play()`
+     */
+    data class Plan(
+        val rebuildSource: Boolean,
+        val prepare: Boolean,
+        val play: Boolean,
+    )
+
+    /**
      * 同一曲目的启动冷却。
      *
      * 宿主在切歌瞬间可能多次上报同一个 id（内部状态抖动、快速连点），

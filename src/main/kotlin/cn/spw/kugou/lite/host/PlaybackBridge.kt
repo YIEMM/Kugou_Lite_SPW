@@ -615,20 +615,25 @@ private const val QUEUE_FILL_AHEAD = 3
             Diag.info(TAG, "跳过重复启动「${song.title}」（同一首冷却中）")
             return
         }
-        when (action) {
-            TrackStartPolicy.Action.None -> Unit
-            TrackStartPolicy.Action.PlayOnly -> {
-                runCatching { prepareMethod?.invoke(ctrl) }
-                runCatching { playMethod?.invoke(ctrl) }
-                Diag.info(TAG, "已补启动播放「${song.title}」（path 原本有效，不重载）")
-            }
-            TrackStartPolicy.Action.RebindAndPlay -> {
-                runCatching { pauseMethod?.invoke(ctrl) }
+        // 步骤由 TrackStartPolicy.plan 显式给出，调用方不再自己拍板 ——
+        // 用户反馈「有缓存的歌会加载 2 次」就是这里多做了一次 prepare()：
+        // 宿主切到该曲目时已经加载过（path 一直有效），再 prepare 等于重载。
+        val plan = TrackStartPolicy.plan(action)
+        runCatching {
+            if (plan.rebuildSource) {
+                pauseMethod?.invoke(ctrl)
                 setAudioSourceMethod?.invoke(ctrl, trackId, path, 0L, true)
-                runCatching { prepareMethod?.invoke(ctrl) }
-                runCatching { playMethod?.invoke(ctrl) }
-                Diag.info(TAG, "已重建音频源并播放「${song.title}」")
             }
+            if (plan.prepare) prepareMethod?.invoke(ctrl)
+            if (plan.play) playMethod?.invoke(ctrl)
+        }.onFailure {
+            Diag.warn(TAG, "启动播放失败「${song.title}」：${it.message}")
+        }
+
+        if (plan.rebuildSource) {
+            Diag.info(TAG, "已重建音频源并播放「${song.title}」")
+        } else if (plan.play) {
+            Diag.info(TAG, "已补启动播放「${song.title}」（宿主已加载，只补 play 不 prepare）")
         }
     }
 
