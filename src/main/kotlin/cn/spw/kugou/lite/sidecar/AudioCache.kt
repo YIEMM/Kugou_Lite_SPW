@@ -327,14 +327,55 @@ object AudioCache {
     }
 
     fun ensureMetadata(song: Song, audioFile: File, lyrics: String?) {
-        val coverWritten = embedCover(song, audioFile)
-        val lyricsWritten = if (!lyrics.isNullOrBlank()) writeLrcSidecar(audioFile, lyrics) else false
+        val ext = audioFile.extension.lowercase()
+        val (coverWritten, lyricsWritten) = if (ext == "flac") {
+            // FLAC：封面走 PICTURE 块、歌词内嵌 Vorbis Comment ——
+            // 宿主 `readFlacArtworkLazily` / `readFlacLyricsWithoutPictures`
+            // 就是按这两个块读的，光靠 sidecar `.lrc` 拿不到封面。
+            // 一次调用同时写两样，避免几十 MB 的文件重写两遍。
+            val wroteTags = ensureFlacMetadata(song, audioFile, lyrics)
+            // sidecar 仍然要写：宿主对 FLAC 也会尝试旁挂 .lrc，两条路都通更稳。
+            val wroteLrc = if (!lyrics.isNullOrBlank()) writeLrcSidecar(audioFile, lyrics) else false
+            wroteTags to wroteLrc
+        } else {
+            val cover = embedCover(song, audioFile)
+            val lrc = if (!lyrics.isNullOrBlank()) writeLrcSidecar(audioFile, lyrics) else false
+            cover to lrc
+        }
         if (coverWritten || lyricsWritten) {
             // 记录「本次真的写了文件」，供切歌后触达宿主重读封面/歌词。
             // 宿主的封面链路只在切歌时读一次文件；若读取早于写入完成，
             // 就会停在 ♪ 占位（用户反馈「第一次播放没封面没歌词、第二次正常」）。
             lastMetadataWriteAt = System.currentTimeMillis()
             Diag.info(TAG, "元数据已更新（封面=$coverWritten 歌词=$lyricsWritten），需通知宿主重读")
+        }
+    }
+
+    /**
+     * FLAC 元数据补齐：封面写 PICTURE 块、歌词写 Vorbis Comment。
+     *
+     * 用户反馈「FLAC 没有封面」：宿主读 FLAC 封面走的是 PICTURE 块
+     * （`readFlacArtworkLazily`），而旧实现只给 mp3 写 ID3 APIC、
+     * FLAC 直接跳过 —— 于是无损曲目永远只有 ♪ 占位。
+     *
+     * [FlacTagWriter.writeTags] 幂等（已写入就跳过重写），失败不影响播放。
+     *
+     * @return 是否真的改写了文件（供调用方决定是否通知宿主重读）
+     */
+    private fun ensureFlacMetadata(song: Song, audioFile: File, lyrics: String?): Boolean {
+        return try {
+            val cover = coverBytesOf(song)
+            val mime = cover?.let { Id3CoverWriter.detectMime(it) }
+            // **必须与 sidecar .lrc 同源**：raw 可能是 KRC，直接内嵌会把
+            // `[kana:...]` / `[language:...]` 等私有标签写进 Vorbis Comment，
+            // 宿主和其它播放器会把它当普通歌词行显示出来。
+            val embedded = lyrics?.takeIf { it.isNotBlank() }?.let {
+                if (KrcLyrics.isKrc(it)) KrcLyrics.toEnhancedLrc(it) else it
+            }
+            FlacTagWriter.writeTags(audioFile, cover, mime, embedded)
+        } catch (e: Exception) {
+            Diag.warn(TAG, "FLAC 元数据补齐失败（不影响播放）：${e.message}")
+            false
         }
     }
 
@@ -357,29 +398,38 @@ object AudioCache {
      */
     private fun embedCover(song: Song, audioFile: File): Boolean {
         return try {
-            // 只处理支持 ID3 的容器；flac 用 vorbis comment，暂不支持
+            // 只处理支持 ID3 的容器；FLAC 走 ensureFlacMetadata（PICTURE 块）
             val ext = audioFile.extension.lowercase()
             if (ext != "mp3") return false
 
             // 已有封面就跳过（读写整个文件很贵）
             if (Id3CoverWriter.hasApicFrame(audioFile)) return false
 
-            val coverUrl = song.coverUrl(500) ?: return false
-            val cacheDir = dir ?: return false
-            val coverFile = File(cacheDir, "cover-${song.hash.ifBlank { song.albumAudioId }}.img")
-
-            val bytes = if (coverFile.isFile && coverFile.length() > 0) {
-                coverFile.readBytes()
-            } else {
-                downloadBytes(coverUrl)?.also { b ->
-                    runCatching { coverFile.writeBytes(b) }
-                }
-            } ?: return false
+            val bytes = coverBytesOf(song) ?: return false
 
             Id3CoverWriter.writeCover(audioFile, bytes, Id3CoverWriter.detectMime(bytes))
         } catch (e: Exception) {
             Diag.warn(TAG, "内嵌封面失败（不影响播放）：${e.message}")
             false
+        }
+    }
+
+    /**
+     * 封面字节：`cover-<hash>.img` 缓存优先，未命中现下载并缓存。
+     *
+     * MP3（ID3 APIC）与 FLAC（PICTURE 块）共用同一份字节，避免各自实现
+     * 一遍「先查缓存再下载」的逻辑。
+     */
+    private fun coverBytesOf(song: Song): ByteArray? {
+        val coverUrl = song.coverUrl(500) ?: return null
+        val cacheDir = dir ?: return null
+        val coverFile = File(cacheDir, "cover-${song.hash.ifBlank { song.albumAudioId }}.img")
+        return if (coverFile.isFile && coverFile.length() > 0) {
+            coverFile.readBytes()
+        } else {
+            downloadBytes(coverUrl)?.also { b ->
+                runCatching { coverFile.writeBytes(b) }
+            }
         }
     }
 
