@@ -284,7 +284,15 @@ object TrackWatcher {
         }
         lastBoundAt[currentId] = nowMs
 
+        // 记录当前曲目，供诊断与「正在下载的曲目」判定（不参与歌词匹配）。
+        LyricsRegistry.markCurrent(currentId)
+
         Diag.info(TAG, "检测到切歌：「${song.title}」")
+
+        // 切歌瞬间就把歌词准备好：宿主随后来问 updateLyrics 时就能命中，
+        // 不必等音频下载完（下载要几百毫秒到数秒，宿主早就问过了）。
+        // 已经有就跳过，避免重复请求接口。
+        ensureLyricsReady(song, currentId)
 
         // 快速路径：队列补齐时已经下载好本地文件，直接用它，不再取流。
         // 这能显著减少切歌延迟（尤其对需要收藏页解锁的受限曲目，
@@ -315,6 +323,41 @@ object TrackWatcher {
         }.getOrNull()
         val local = AudioCache.ensureLocal(song, stream, lrc)
         PlaybackBridge.rebindCurrent(song, stream, local)
+    }
+
+    /**
+     * 切歌瞬间把歌词登记进 [LyricsRegistry]，供宿主扩展点即时命中。
+     *
+     * ## 为什么要在切歌时抢跑
+     *
+     * 宿主切歌后立刻调 `PlaybackExtensionPoint.updateLyrics` 问歌词。
+     * 若我们等音频下载完（数百毫秒到数秒）才登记，宿主早就问过了，
+     * 只能回退读 .lrc —— 而那一刻文件可能还没写，于是无歌词。
+     *
+     * 所以在这里**先只取歌词**（一次接口调用，不下载音频），登记完就返回。
+     * 已有登记则跳过，避免重复请求。
+     *
+     * 失败不致命：返回 null 时宿主会回退到文件读取。
+     */
+    private fun ensureLyricsReady(song: Song, trackId: String) {
+        if (LyricsRegistry.get(trackId) != null) return
+        runCatching {
+            val lrc = KugouApi.lyricByHash(
+                KugouApi.lyricKeyFor(song.hash, song.albumAudioId),
+                song.title,
+                song.singer,
+            )
+            if (lrc.isNullOrBlank()) {
+                Diag.info(TAG, "切歌预取歌词为空「${song.title}」")
+                // 明确告知等待者：这首确实没有歌词，别再等
+                LyricsRegistry.markNoLyrics(trackId)
+                return@runCatching
+            }
+            LyricsRegistry.put(trackId, lrc)
+            Diag.info(TAG, "切歌预取歌词完成「${song.title}」（${lrc.length} 字符）")
+        }.onFailure {
+            Diag.warn(TAG, "切歌预取歌词失败「${song.title}」：${it.javaClass.simpleName}")
+        }
     }
 
     /**

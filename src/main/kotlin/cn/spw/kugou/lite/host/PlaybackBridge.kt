@@ -290,6 +290,23 @@ private const val QUEUE_FILL_AHEAD = 3
 
             if (items.isEmpty()) return false
 
+            // 告诉扩展点当前曲目，宿主给的 MediaItem.id 偶尔为空时可兜底命中。
+            LyricsRegistry.markCurrent(buildTrackId(currentSong))
+
+            // 兜底：当前曲目若已有本地 .lrc 而注册表还没有，就从文件补登记。
+            // 宿主在建队列后**立刻**会问歌词，这里必须同步准备好。
+            val curId = buildTrackId(currentSong)
+            if (LyricsRegistry.get(curId) == null) {
+                runCatching {
+                    val lrcFile = localFile?.let {
+                        File(it.parentFile, it.nameWithoutExtension + ".lrc")
+                    }
+                    if (lrcFile != null && lrcFile.isFile && lrcFile.length() > 0) {
+                        LyricsRegistry.put(curId, lrcFile.readText(Charsets.UTF_8))
+                    }
+                }
+            }
+
             runCatching { pauseMethod?.invoke(ctrl) }
 
             // **一次性建整条队列，当前项的 path 已经是正确的**，

@@ -189,6 +189,19 @@ object KrcLyrics {
      *
      * @param withTranslation 是否带上翻译行
      */
+    /**
+     * 把 KRC 转成**纯文本**逐行 LRC（不带 `<mm:ss.xx>` 逐字标记）。
+     *
+     * 用途：通过 `PlaybackExtensionPoint.updateLyrics` 直接投喂宿主。
+     * 宿主内部按 LRC 文本解析，逐字标记会当成普通字符显示。
+     * 实现复用 [toEnhancedLrc] 再剥掉 `<...>` 单元，时间戳与译文保持一致。
+     */
+    fun toPlainLrc(krc: String): String =
+        WORD_PATTERN_LRC.replace(toEnhancedLrc(krc), "")
+
+    /** 匹配增强 LRC 里的 `<mm:ss.xx>` 逐字标记。 */
+    private val WORD_PATTERN_LRC = Regex("""<\d{2}:\d{2}\.\d{2}>""")
+
     fun toEnhancedLrc(krc: String, withTranslation: Boolean = true): String {
         // 优先中文译文（type=1）；没有就退化为罗马音（type=0）。
         // 用户反馈「みむかゥわナイストライ没有翻译」：该曲 KRC 只有罗马音，

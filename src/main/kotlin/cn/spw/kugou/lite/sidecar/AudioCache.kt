@@ -122,6 +122,13 @@ internal fun cacheName(stem: String, quality: String, ext: String): String {
     return "$stem-$q.$e"
 }
 
+/**
+ * 曲目 id，必须与 PlaybackBridge.buildTrackId 完全一致，
+ * 否则宿主传给 PlaybackExtensionPoint 的 id 与注册表对不上。
+ */
+internal fun trackIdOf(song: Song): String =
+    "kugou-${song.hash.ifBlank { song.albumAudioId }}"
+
 object AudioCache {
 
     private const val TAG = "cache"
@@ -184,6 +191,13 @@ object AudioCache {
         val stem = cacheStemOf(song.hash, song.albumAudioId) ?: return null
         val ext = stream.extName.ifBlank { "mp3" }.lowercase()
         val target = File(cacheDir, cacheName(stem, Settings.requestQuality(), ext))
+
+        // 把歌词投喂给宿主扩展点（见 LyricsRegistry）—— 无论是否命中缓存都要登记。
+        // 宿主只在 onLoaded 时读一次歌词，而我们的取歌词在切歌之后才发生；
+        // 走 PlaybackExtensionPoint.updateLyrics 直接返回文本，绕开文件与时序。
+        if (!lyrics.isNullOrBlank()) {
+            cn.spw.kugou.lite.host.LyricsRegistry.put(trackIdOf(song), lyrics)
+        }
 
         // 已有缓存 → 补齐元数据后直接返回
         if (target.isFile && target.length() > 0) {

@@ -610,6 +610,12 @@ internal fun playSongsFromQueue(
         val lrc = runCatching {
             KugouApi.lyricByHash(KugouApi.lyricKeyFor(song.hash, song.albumAudioId), song.title, song.singer)
         }.getOrNull()
+        // **立刻**登记给宿主扩展点：宿主在 setPlaybackQueue 之后马上就会问歌词，
+        // 不能等到 ensureLocal 里的下载路径（那要等这首真正开始下载）。
+        cn.spw.kugou.lite.host.LyricsRegistry.put(
+            cn.spw.kugou.lite.sidecar.trackIdOf(song),
+            lrc,
+        )
         val local = AudioCache.ensureLocal(song, stream, lrc)
         if (local == null) {
             Diag.warn("[page] 本地缓存失败，回退 HTTP 直链")
