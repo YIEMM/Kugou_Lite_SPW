@@ -126,6 +126,14 @@ data class Song(
      * 放在构造参数末尾且带默认值，避免破坏已有的 [Song] 构造调用。
      */
     val curMark: String = "",
+    /**
+     * 歌曲的数字 id（上游 `songid` / `song_id` / `SongId`）。
+     *
+     * 私人 FM 续流需要它：`/personal/fm` 的续流游标是「上一首的 hash + songid」
+     * （对照 MD3Music `getPersonalFm(hash, songId, action)`）。只带 hash 时上游
+     * 多数情况仍能续，但官方实现两个都带，缺一个会降低命中率。
+     */
+    val songId: String = "",
 ) {
     /**
      * 时长格式化为 `m:ss`。

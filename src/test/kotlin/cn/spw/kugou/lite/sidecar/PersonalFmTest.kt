@@ -3,6 +3,7 @@ package cn.spw.kugou.lite.sidecar
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
+import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 /**
@@ -55,13 +56,14 @@ class PersonalFmTest {
     }
 
     @Test
-    fun `切档位重置 curMark 与 seenHashes`() {
+    fun `切档位重置续流游标与 seenHashes`() {
         val s = PersonalFm.Session(0)
         s.markPlayed(listOf(song("A")))
-        s.curMark = "MK1"
+        // 续流游标是「上一首」，不是 cur_mark（见 PersonalFm.Session.lastSong）
+        s.lastSong = song("A")
         val next = s.switchStation(2)
         assertEquals(2, next.stationIndex)
-        assertEquals("", next.curMark)
+        assertNull(next.lastSong, "切档必须清空游标，否则会把旧档位的歌带到新档位")
         assertTrue(next.seenHashes.isEmpty())
     }
 }

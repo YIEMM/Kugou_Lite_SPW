@@ -58,12 +58,12 @@ private typealias AlbumBriefState = cn.spw.kugou.lite.sidecar.AlbumBrief
  *
  * ## 为什么需要这个函数
  *
- * 早期实现每次都传 `curMark = null`，等于每轮都从推荐流开头取 ——
- * 「无限续播」名不副实，而且会出现重复歌曲。
+ * 早期实现把 `cur_mark` 当分页游标，但上游每次都回同一个 `99999998`，
+ * 于是每轮拿到同一批歌，第二次就被去重全挡 ——「无限续播」只能成功一次。
  *
- * 现在：
- * 1. 带上会话里记住的 `curMark`（上一批返回的续流令牌）
- * 2. 把返回的 `curMark` 写回会话，供下一轮使用
+ * 现在（对照 MD3Music 参考实现）：
+ * 1. 用**上一首**的 hash + songid 作为续流游标
+ * 2. 带游标要不到新歌时，退回不带游标再要一次
  * 3. 用 [PersonalFm.Session.filterFresh] 按 hash 去重，过滤已听过的
  *
  * 整批都听过时 `filterFresh` 返回空列表 —— 这是**正常成功**，不是失败，
@@ -72,15 +72,29 @@ private typealias AlbumBriefState = cn.spw.kugou.lite.sidecar.AlbumBrief
  * @return 本批可播的新歌（可能为空）
  */
 private fun loadFmBatch(session: PersonalFm.Session): List<Song> {
-    val batch = runCatching {
-        DiscoverApi.personalFm(session.stationIndex, session.curMark)
+    // 续流游标 = **上一首**的 hash/songid（不是 cur_mark 分页，见 buildFmParams）。
+    val cursor = session.lastSong
+
+    fun fetch(h: String?, sid: String?): List<Song>? = runCatching {
+        DiscoverApi.personalFm(session.stationIndex, cursorHash = h, cursorSongId = sid).songs
     }.getOrElse {
         Diag.warn("[discover] 私人 FM 请求失败：${it.message}")
-        return emptyList()
+        null
     }
-    // 游标原样回写：不带下一轮会让推荐流从头开始
-    session.curMark = batch.curMark
-    return session.filterFresh(batch.songs)
+
+    // 带游标要不到新歌就**退回不带游标再要一次**（参考实现 _append 的同款处理）：
+    // 上游偶尔会因为没有更多推荐而返回空，此时从无游标重开才能继续。
+    // 续播问题的关键线索：没有 songId 时上游只能按 hash 粗粒度续流，命中率下降。
+    Diag.info("[discover] FM 续流游标 hash=${cursor?.hash?.take(8) ?: "-"} songId=${cursor?.songId ?: "-"}")
+    var songs = fetch(cursor?.hash, cursor?.songId)
+    if (songs.isNullOrEmpty() && cursor != null) {
+        Diag.info("[discover] 带游标续流为空，退回无游标重取")
+        songs = fetch(null, null)
+    }
+    val fresh = session.filterFresh(songs.orEmpty())
+    // 记录本批最后一首作为下一次的游标
+    if (fresh.isNotEmpty()) session.lastSong = fresh.last()
+    return fresh
 }
 
 @Composable
@@ -98,7 +112,7 @@ fun DiscoverPage() {
     val newAlbums = rememberAsyncState<List<AlbumBriefState>>()
     val fm = rememberAsyncState<List<Song>>()
     /**
-     * FM 会话：记住 curMark 游标与已听 hash。
+     * FM 会话：记住续流游标（上一首）与已听 hash。
      *
      * 用 `mutableStateOf` 持有而不是 `remember(fmStation)`：切档时我们在
      * 事件回调里**同步**换新 Session（清空游标与去重集合），随后 load 闭包

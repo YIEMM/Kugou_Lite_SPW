@@ -53,8 +53,17 @@ object PersonalFm {
      */
     class Session(val stationIndex: Int) {
 
-        /** 上游带回的续流令牌；新会话为空。 */
-        var curMark: String = ""
+        /**
+         * 续流游标：**上一首**的歌曲信息；新会话为空。
+         *
+         * ## 为什么不是 cur_mark
+         *
+         * 真机日志显示上游每次返回同一个 `cur_mark=99999998`，拿它当分页游标
+         * 会导致每次续拉都拿到同一批歌，第二次就被去重全挡（「无限续播」只能
+         * 成功一次）。对照 MD3Music：续流靠上一首的 hash + songid。
+         * `cur_mark` 是**每首歌的反馈令牌**（play/garbage 上报用）。
+         */
+        var lastSong: Song? = null
 
         /** 已听过的 hash，用于补货去重。 */
         val seenHashes: MutableSet<String> = mutableSetOf()

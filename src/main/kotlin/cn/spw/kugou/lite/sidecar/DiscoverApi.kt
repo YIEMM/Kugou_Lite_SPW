@@ -22,7 +22,7 @@ import cn.spw.kugou.lite.diag.Diag
  * | 刷歌推荐 | `/home/discover` | `data.items[].song_info` | **多套一层** `song_info` |
  * | 新歌速递 | `/top/song` | `data` **直接是数组** | 不是 `data.songs` |
  * | 新碟上架 | `/top/album` | `data.chn/eur/jpn/kor` | 按地区分桶，没有统一列表 |
- * | 私人 FM | `/personal/fm` | `data.song_list` + `data.cur_mark` | 游标要原样带回下一轮 |
+ * | 私人 FM | `/personal/fm` | `data.song_list` + `data.cur_mark` | 续流游标是上一首的 hash+songid，cur_mark 是反馈令牌 |
  *
  * ## 歌曲字段兼容不在这里重复实现
  *
@@ -280,18 +280,49 @@ object DiscoverApi {
      * @param stationIndex 档位下标（见 [fmStations]），越界时按 0 处理
      * @param curMark 上一批返回的游标；为空表示**新会话**，不带该参数
      */
-    fun personalFm(stationIndex: Int, curMark: String?): FmBatch {
+    fun personalFm(
+        stationIndex: Int,
+        cursorHash: String? = null,
+        cursorSongId: String? = null,
+    ): FmBatch {
         val station = fmStations.getOrElse(stationIndex) { fmStations[0] }
-        val params = buildMap {
-            put("mode", station.mode)
-            put("song_pool_id", station.songPoolId.toString())
-            put("action", "play")
-            // 空游标不能混进 query：上游按「有 cur_mark 就续流」处理，
-            // 传空串会让它续一个不存在的流（实测返回空 song_list）。
-            curMark?.takeIf { it.isNotBlank() }?.let { put("cur_mark", it) }
-        }
+        val params = buildFmParams(
+            mode = station.mode,
+            songPoolId = station.songPoolId,
+            cursorHash = cursorHash,
+            cursorSongId = cursorSongId,
+        )
         val json = KugouApi.getRaw("/personal/fm", params) ?: return FmBatch(emptyList(), "")
         return parseFm(json)
+    }
+
+    /**
+     * 构造 `/personal/fm` 的请求参数。
+     *
+     * ## 续流游标是 hash + songid，不是 cur_mark（2026-11-15 真机定位）
+     *
+     * 早期用 `cur_mark` 当分页游标，但上游每次都回同一个 `99999998`：
+     *
+     *     21:21:22 私人 FM → 5 首，cur_mark=99999998  → 追加 5 首
+     *     21:21:42 私人 FM → 5 首，cur_mark=99999998  → 本批全听过，停止续拉
+     *
+     * 于是「无限续播」只能成功一次。对照 MD3Music 参考实现
+     * （`personal_fm_core.dart` 的 `_fetch` → `getPersonalFm(hash, songId, action)`）：
+     * 续流靠**上一首的 hash + songid** 告诉上游「从这首之后接着推」。
+     * `cur_mark` 是**每首歌的反馈令牌**（play/garbage 上报用），不是分页游标。
+     */
+    internal fun buildFmParams(
+        mode: String,
+        songPoolId: Int,
+        cursorHash: String?,
+        cursorSongId: String?,
+    ): Map<String, String> = buildMap {
+        put("mode", mode)
+        put("song_pool_id", songPoolId.toString())
+        put("action", "play")
+        // 空值不能混进 query：上游按「有 hash 就续流」处理，空串会续一个不存在的流。
+        cursorHash?.takeIf { it.isNotBlank() }?.let { put("hash", it) }
+        cursorSongId?.takeIf { it.isNotBlank() }?.let { put("songid", it) }
     }
 
     // ------------------------------------------------------------ 内部

@@ -950,6 +950,8 @@ object KugouApi {
             albumId = firstString(obj, "album_id", "AlbumID").orEmpty(),
             mixSongId = mixSongId,
             fileId = firstLong(obj, "fileid", "file_id"),
+            // FM 续流游标要用（见 Song.songId 文档）
+            songId = firstString(obj, "songid", "song_id", "SongId", "SongID").orEmpty(),
         )
     }
 
@@ -1326,6 +1328,10 @@ object KugouApi {
             albumId = firstString(obj, "album_id", "AlbumID", "albumid").orEmpty(),
             mixSongId = firstString(obj, "mixsongid", "mix_song_id", "MixSongID").orEmpty(),
             fileId = firstLong(obj, "fileid", "file_id", "FileID"),
+            // FM 续流游标要用（见 Song.songId 文档）。
+            // 注意 songid 在 JSON 里常是**数字**（如 318.0），asString 会经
+            // numberToPlainString 转成 "318"，不要改成只认字符串的写法。
+            songId = firstString(obj, "songid", "song_id", "SongId", "SongID").orEmpty(),
         )
     }
 
