@@ -102,20 +102,44 @@ object JsonLite {
     private class Parser(private val src: String) {
         private var pos = 0
 
+        /**
+         * 当前递归深度（N03）。
+         *
+         * 解析是 `parseValue → parseObject/parseArray → parseValue` 的递归，
+         * 上游返回畸形（超深嵌套）JSON 时会抛 `StackOverflowError`。
+         * 那是 Error 不是 Exception，`ApiExec` 的 catch 拦不住，
+         * 工作线程会静默死亡、页面永久「加载中」。
+         *
+         * 这里限制最大深度，超限抛 [Malformed]（可被正常捕获）。
+         */
+        private var depth = 0
+
+        private companion object {
+            /** 最大嵌套深度。真实接口最多 10 层左右，256 足够宽松。 */
+            const val MAX_DEPTH = 256
+        }
+
         fun parseValue(): Any? {
-            skipWhitespace()
-            if (pos >= src.length) throw Malformed("意外结束")
-            return when (val c = src[pos]) {
-                '{' -> parseObject()
-                '[' -> parseArray()
-                '"' -> parseString()
-                't' -> parseLiteral("true", true)
-                'f' -> parseLiteral("false", false)
-                'n' -> parseLiteral("null", null)
-                else -> {
-                    if (c == '-' || c.isDigit()) parseNumber()
-                    else throw Malformed("非法字符 '$c' @$pos")
+            if (++depth > MAX_DEPTH) {
+                throw Malformed("JSON 嵌套超过 $MAX_DEPTH 层 @$pos")
+            }
+            try {
+                skipWhitespace()
+                if (pos >= src.length) throw Malformed("意外结束")
+                return when (val c = src[pos]) {
+                    '{' -> parseObject()
+                    '[' -> parseArray()
+                    '"' -> parseString()
+                    't' -> parseLiteral("true", true)
+                    'f' -> parseLiteral("false", false)
+                    'n' -> parseLiteral("null", null)
+                    else -> {
+                        if (c == '-' || c.isDigit()) parseNumber()
+                        else throw Malformed("非法字符 '$c' @$pos")
+                    }
                 }
+            } finally {
+                depth--
             }
         }
 

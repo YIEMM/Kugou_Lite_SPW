@@ -75,7 +75,13 @@ internal fun runQrPoll(
 
         val status = check(key) ?: continue
         when (status.status) {
-            0 -> onText("二维码已过期，请点下方刷新")
+            0 -> {
+                // 已过期就**立即停止**（N07）：早期只更新文案继续轮询，
+                // 会把 150 次（5 分钟）全部打完，后台持续打接口。
+                // 过期是不可恢复状态，必须让用户刷新二维码重新开始。
+                onText("二维码已过期，请点下方刷新")
+                return false
+            }
             1 -> onText("请用酷狗 App 扫码")
             2 -> onText("已扫码，请在手机上确认")
             4 -> {
@@ -90,6 +96,7 @@ internal fun runQrPoll(
             else -> Unit // 未知状态：保持当前文案，继续轮询
         }
     }
+    // 轮询次数用尽仍未登录：二维码此刻也已失效，提示刷新（与既有语义一致）
     onText("二维码已过期，请点下方刷新")
     return false
 }

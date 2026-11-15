@@ -118,7 +118,14 @@ internal fun cacheStemOf(hash: String, albumAudioId: String): String? {
  */
 internal fun cacheName(stem: String, quality: String, ext: String): String {
     val q = sanitizeCacheKey(quality.ifBlank { "128" })
-    val e = ext.ifBlank { "mp3" }.lowercase()
+    // **扩展名也必须净化**（N04）：它是安全边界，不是排版。
+    //
+    // BUG-36 当初只覆盖了 key 与音质，漏了扩展名；而 extName 来自上游
+    // 响应，若返回 "../../../evil" 就能把文件写出缓存目录。
+    // 这里只保留字母数字，并且**必须以已知音频容器为准**，
+    // 否则回退 mp3 —— 避免 "mp3/../../x" 这类绕过。
+    val rawExt = ext.ifBlank { "mp3" }.lowercase().trim()
+    val e = rawExt.takeIf { it in CACHE_AUDIO_EXTS } ?: "mp3"
     return "$stem-$q.$e"
 }
 
@@ -159,9 +166,63 @@ object AudioCache {
         val quality = Settings.requestQuality()
         for (ext in CACHE_AUDIO_EXTS) {
             val f = File(cacheDir, cacheName(stem, quality, ext))
-            if (f.isFile && f.length() > 0) return f
+            // 不能只判 length() > 0（N05）：异常退出/下载中断会留下 3 字节垃圾，
+            // 一旦被当成有效缓存，宿主播放无声，且 ensureLocal 认为命中 → 永不重下。
+            if (isPlausibleAudio(f)) return f
         }
         return null
+    }
+
+    /**
+     * 文件是否「看起来是完整音频」（N05）。
+     *
+     * ## 为什么不能只看体积
+     *
+     * 下载中断 / 进程被杀会留下几字节的垃圾文件。早期只判 `length() > 0`，
+     * 这类文件被当成有效缓存：宿主播放无声，且 `ensureLocal` 认为命中 →
+     * **永久无声且永不重下**（用户只能手动清缓存）。
+     *
+     * ## 判据
+     *
+     * - 体积下限：一首歌不可能小于 [MIN_AUDIO_BYTES]
+     * - 文件头魔数：mp3（ID3 / 帧同步）、flac、ogg、m4a、wav
+     *
+     * 任一不满足即视为损坏，交给调用方重新下载。
+     */
+    internal fun isPlausibleAudio(f: File): Boolean {
+        if (!f.isFile || f.length() < MIN_AUDIO_BYTES) return false
+        return runCatching {
+            val head = ByteArray(12)
+            val read = f.inputStream().use { it.read(head) }
+            if (read < 4) return@runCatching false
+            hasAudioMagic(head, read, f.extension.lowercase())
+        }.getOrDefault(false)
+    }
+
+    /** 一首歌的最小合理体积（字节）。8KB 以下不可能是有效音频。 */
+    private const val MIN_AUDIO_BYTES = 8L * 1024L
+
+    /** 按容器类型校验文件头。 */
+    private fun hasAudioMagic(head: ByteArray, read: Int, ext: String): Boolean {
+        fun u(i: Int) = head[i].toInt() and 0xFF
+        return when (ext) {
+            "mp3" ->
+                // "ID3" 标签头
+                (read >= 3 && head[0] == 'I'.code.toByte() && head[1] == 'D'.code.toByte() && head[2] == '3'.code.toByte()) ||
+                    // MPEG 帧同步：11 个 1
+                    (read >= 2 && u(0) == 0xFF && (u(1) and 0xE0) == 0xE0)
+            "flac" -> read >= 4 && head[0] == 'f'.code.toByte() && head[1] == 'L'.code.toByte() &&
+                head[2] == 'a'.code.toByte() && head[3] == 'C'.code.toByte()
+            "ogg" -> read >= 4 && head[0] == 'O'.code.toByte() && head[1] == 'g'.code.toByte() &&
+                head[2] == 'g'.code.toByte() && head[3] == 'S'.code.toByte()
+            "m4a" -> read >= 8 && head[4] == 'f'.code.toByte() && head[5] == 't'.code.toByte() &&
+                head[6] == 'y'.code.toByte() && head[7] == 'p'.code.toByte()
+            "wav" -> read >= 4 && head[0] == 'R'.code.toByte() && head[1] == 'I'.code.toByte() &&
+                head[2] == 'F'.code.toByte() && head[3] == 'F'.code.toByte()
+            "aac" -> read >= 2 && u(0) == 0xFF && (u(1) and 0xF0) == 0xF0
+            // 未知容器：只做体积校验，不误杀
+            else -> true
+        }
     }
 
     /**
@@ -199,10 +260,17 @@ object AudioCache {
             cn.spw.kugou.lite.host.LyricsRegistry.put(trackIdOf(song), lyrics)
         }
 
-        // 已有缓存 → 补齐元数据后直接返回
-        if (target.isFile && target.length() > 0) {
+        // 已有缓存 → 补齐元数据后直接返回。
+        // 必须校验「看起来是完整音频」（N05）：否则下载中断留下的垃圾文件
+        // 会被当成命中，导致永久无声且永不重下。
+        if (isPlausibleAudio(target)) {
             ensureMetadata(song, target, lyrics)
             return target
+        }
+        // 损坏的缓存直接删掉，走重新下载
+        if (target.isFile) {
+            Diag.warn(TAG, "缓存损坏，重新下载：${target.name}（${target.length()} 字节）")
+            runCatching { target.delete() }
         }
 
         // 下载
@@ -216,7 +284,7 @@ object AudioCache {
                         target.delete()
                         part.renameTo(target)
                     }
-                    if (target.isFile && target.length() > 0) {
+                    if (isPlausibleAudio(target)) {
                         Diag.info(TAG, "已缓存 ${target.name}（${target.length() / 1024} KB）")
                         ensureMetadata(song, target, lyrics)
                         target

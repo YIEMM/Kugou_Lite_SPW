@@ -259,12 +259,16 @@ object TrackWatcher {
         val previous = lastHandled.get()
         if (currentId == previous && !retrying) return
 
-        lastHandled.set(currentId)
-
         val song = queueMap[currentId] ?: run {
-            Diag.warn(TAG, "切到未知曲目 $currentId（不在已登记队列里）")
+            // **不要**在这里标记 lastHandled（N10）：
+            // 早期把 lastHandled.set(currentId) 放在本检查之前，未知曲目被记为
+            // 「已处理」，之后 currentId == previous 永远早退 → 整首静音，
+            // 只能等下一首才能恢复。现在不标记，下一次轮询还会再试。
+            Diag.warn(TAG, "切到未知曲目 $currentId（不在已登记队列里，稍后重试）")
             return
         }
+
+        lastHandled.set(currentId)
 
         // ---------------------------------------------------------- 续拉判定
         // 接近队列末尾就通知调用方去拉下一批（歌单下一页 / FM 下一批）。

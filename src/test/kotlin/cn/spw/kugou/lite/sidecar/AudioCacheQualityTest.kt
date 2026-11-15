@@ -74,10 +74,28 @@ class AudioCacheQualityTest {
         }
     }
 
+    /**
+     * 造一个「看起来是完整音频」的占位缓存文件。
+     *
+     * 必须带正确的容器魔数且体积够大：N05 修复后 AudioCache 会校验文件头，
+     * 32 字节的垃圾文件不再被当作有效缓存（这正是要防的场景）。
+     * 这里按扩展名写入对应魔数，保持测试语义（测的是「命中/不命中」，不是校验器）。
+     */
     private fun put(dir: File, name: String): File =
         File(dir, name).apply {
             parentFile?.mkdirs()
-            writeBytes(ByteArray(32) { 7 })
+            val magic = when {
+                name.endsWith(".flac") -> "fLaC".toByteArray(Charsets.ISO_8859_1)
+                name.endsWith(".mp3") -> byteArrayOf(
+                    'I'.code.toByte(), 'D'.code.toByte(), '3'.code.toByte(), 3, 0, 0, 0, 0, 0, 0,
+                )
+                name.endsWith(".ogg") -> "OggS".toByteArray(Charsets.ISO_8859_1)
+                name.endsWith(".m4a") -> byteArrayOf(0, 0, 0, 32) + "ftyp".toByteArray(Charsets.ISO_8859_1)
+                name.endsWith(".wav") -> "RIFF".toByteArray(Charsets.ISO_8859_1)
+                else -> ByteArray(0)
+            }
+            // 16KB 填充，越过 MIN_AUDIO_BYTES
+            writeBytes(magic + ByteArray(16 * 1024))
         }
 
     // ------------------------------------------------------------------

@@ -89,6 +89,9 @@ class KugouLitePlugin(pluginContext: PluginContext) : SpwPlugin(pluginContext) {
     override fun stop() {
         Diag.info("=== stop ===")
         PageInjection.uninstall()
+        // 必须停掉切歌监听：它是 daemon 线程，插件停止后仍会按 700ms 轮询，
+        // 直到宿主进程退出（N18 附带问题 / BUG-31 家族）。
+        runCatching { cn.spw.kugou.lite.host.TrackWatcher.stop() }
         ApiExec.shutdown()
         SidecarManager.stop()
         PageNav.reset()

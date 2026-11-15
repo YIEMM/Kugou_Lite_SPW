@@ -1,5 +1,6 @@
 package cn.spw.kugou.lite.ui
 
+import java.util.Locale
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -15,6 +16,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
+import cn.spw.kugou.lite.BuildInfo
 import cn.spw.kugou.lite.diag.Diag
 import cn.spw.kugou.lite.sidecar.ApiExec
 import cn.spw.kugou.lite.sidecar.AudioCache
@@ -209,7 +211,7 @@ fun SettingsPage() {
             Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp)) {
                 Text3("Kugou Lite", color = KugouTheme.colors.text)
                 Text3(
-                    text = "Salt Player 酷狗在线听歌插件 · 0.3.0",
+                    text = "Salt Player 酷狗在线听歌插件 · " + BuildInfo.summary,
                     color = KugouTheme.colors.muted,
                     modifier = Modifier.padding(top = 2.dp),
                 )
@@ -217,6 +219,12 @@ fun SettingsPage() {
                     text = "音频由本地 Rust 边车取流；歌词与封面写入本地缓存",
                     color = KugouTheme.colors.muted,
                     modifier = Modifier.padding(top = 6.dp),
+                )
+                // 构建时间单独一行：反馈问题时能确认用户装的是哪次构建
+                Text3(
+                    text = "构建于 " + BuildInfo.builtAt,
+                    color = KugouTheme.colors.faint,
+                    modifier = Modifier.padding(top = 2.dp),
                 )
             }
         }
@@ -260,7 +268,7 @@ private fun QualityRow(
 private fun formatSize(bytes: Long): String = when {
     bytes <= 0 -> "0 B"
     bytes < 1024 -> "$bytes B"
-    bytes < 1024 * 1024 -> "%.1f KB".format(bytes / 1024.0)
-    bytes < 1024L * 1024 * 1024 -> "%.1f MB".format(bytes / 1024.0 / 1024.0)
-    else -> "%.2f GB".format(bytes / 1024.0 / 1024.0 / 1024.0)
+    bytes < 1024 * 1024 -> String.format(Locale.ROOT, "%.1f KB", bytes / 1024.0)
+    bytes < 1024L * 1024 * 1024 -> String.format(Locale.ROOT, "%.1f MB", bytes / 1024.0 / 1024.0)
+    else -> String.format(Locale.ROOT, "%.2f GB", bytes / 1024.0 / 1024.0 / 1024.0)
 }

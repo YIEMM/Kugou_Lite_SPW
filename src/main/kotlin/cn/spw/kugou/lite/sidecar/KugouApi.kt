@@ -907,12 +907,21 @@ object KugouApi {
         val singer = if (singers.isNotEmpty()) singers.joinToString("、") { it.name }
         else singerFromName.ifBlank { "未知歌手" }
 
-        // 时长：timelen 是毫秒
-        val durationMs = firstLong(obj, "timelen", "time_length")
-        val durationSec = when {
-            durationMs <= 0 -> 0
-            durationMs > 100_000 -> (durationMs / 1000).toInt()
-            else -> durationMs.toInt()   // 已是秒
+        // 时长：timelen 是毫秒，time_length 是秒（N20）。
+        //
+        // 早期用 firstLong(obj, "timelen", "time_length") 取第一个**非 null**，
+        // 而上游经常给 time_length:"" （空串比缺字段更常见）—— asLong("")==0，
+        // 于是 durationMs<=0 直接返回 0，后面的毫秒回退永远走不到，
+        // 播放历史整页时长变 --:--。
+        // 改成：取第一个**正数**，0/空串视为不可用继续尝试下一个字段。
+        val durationSec = run {
+            val ms = firstPositiveLong(obj, "timelen")
+            if (ms > 0) {
+                return@run if (ms > 100_000) (ms / 1000).toInt() else ms.toInt()
+            }
+            val sec = firstPositiveLong(obj, "time_length")
+            if (sec > 0) return@run sec.toInt()
+            0
         }
 
         val title = titleFromName.ifBlank { composite }
@@ -1355,12 +1364,31 @@ object KugouApi {
         )
         if (raw <= 0) return 0
 
-        // 有文件大小时用它交叉校验，这是最可靠的判据
+        // 有文件大小时用它交叉校验（N02）。
+        //
+        // 早期用 `raw > fileSize / 4000`（≈32kbps 下限）判断单位，对低码率
+        // 长音频会误判：300 秒 / 400KB（约 10kbps，语音评书常见）算出
+        // `300 > 100` → 走毫秒分支 → 300/1000 = 0 秒 → 界面 `--:--`。
+        //
+        // 正确做法：两种解释各算一个「隐含码率」，取更合理的那一个。
+        // 若 raw 当秒，码率 = fileSize / raw；若当毫秒，码率 = fileSize / (raw/1000)。
+        // 音频码率下限约 4kbps（0.5 KB/s），低于它的解释显然不成立。
         if (fileSize > 0) {
-            // 128kbps ≈ 16000 B/s；用 4000 B/s 作下限（≈32kbps），足够宽松
-            val maxSecIfUnitIsSec = fileSize / 4000
-            if (raw > maxSecIfUnitIsSec) return raw / 1000
-            return raw
+            val asSec = raw.toLong()
+            val asMs = raw.toLong() / 1000
+            // 0.5 KB/s ≈ 4kbps，再低不可能是有效音频
+            val minBytesPerSec = 500L
+            val secPlausible = asSec > 0 && fileSize / asSec >= minBytesPerSec
+            val msPlausible = asMs > 0 && fileSize / asMs >= minBytesPerSec
+            return when {
+                // 只有一种解释成立
+                secPlausible && !msPlausible -> asSec.toInt()
+                msPlausible && !secPlausible -> asMs.toInt()
+                // 两种都成立（极短高码率 / 极长低码率）：按量级取更常见的
+                secPlausible && msPlausible -> if (raw > 100_000) asMs.toInt() else asSec.toInt()
+                // 两种都不成立：保持原值，宁可显示可疑数字也不要归零
+                else -> raw
+            }
         }
 
         // 没有文件大小：退回量级判断（100000 秒 ≈ 27 小时）
@@ -1376,6 +1404,18 @@ object KugouApi {
 
     private fun firstLong(obj: Map<String, Any?>, vararg keys: String): Long =
         keys.firstNotNullOfOrNull { k -> obj[k]?.let { JsonLite.asLong(it) } } ?: 0L
+
+    /**
+     * 按顺序取第一个**正数**字段（N20）。
+     *
+     * 与 [firstLong] 的区别：0 / 空串 / 非数字都视为「不可用」，继续尝试下一个键。
+     * 上游常给 `time_length: ""`，若按「键是否存在」判定就会遮蔽后面有效的
+     * `timelen`，导致整页时长变 `--:--`。
+     */
+    private fun firstPositiveLong(obj: Map<String, Any?>, vararg keys: String): Long =
+        keys.firstNotNullOfOrNull { k ->
+            obj[k]?.let { JsonLite.asLong(it) }?.takeIf { it > 0L }
+        } ?: 0L
 
     /**
      * 供同包内的其它 API 单元（如 [WelfareApi]）复用的 POST 入口。
@@ -1477,6 +1517,17 @@ object KugouApi {
             lastError = "网络权限被拒绝"
             Diag.warn(TAG, "$path 权限错误：${e.message}")
             null
+        } catch (e: JsonLite.Malformed) {
+            // 上游返回 HTML 错误页 / 截断 JSON 时不能把解析异常抛给调用方（N08）：
+            // 本模块契约是「失败返回 null 并写 lastError」。
+            lastError = "响应不是有效 JSON：${e.message}"
+            Diag.warn(TAG, "$path 响应解析失败：${e.message}")
+            null
+        } catch (e: RuntimeException) {
+            // 兜底：任何运行时异常都不许穿透 API 层
+            lastError = "请求处理失败：${e.javaClass.simpleName}"
+            Diag.warn(TAG, "$path 运行时异常：${e.javaClass.simpleName}: ${e.message}")
+            null
         } finally {
             runCatching { conn?.disconnect() }
         }
@@ -1559,6 +1610,15 @@ object KugouApi {
         } catch (e: SecurityException) {
             lastError = "网络权限被拒绝"
             Diag.warn(TAG, "$path 权限错误：${e.message}")
+            null
+        } catch (e: JsonLite.Malformed) {
+            // 同 get()：解析异常不得穿透 API 层（N08）
+            lastError = "响应不是有效 JSON：${e.message}"
+            Diag.warn(TAG, "$path 响应解析失败：${e.message}")
+            null
+        } catch (e: RuntimeException) {
+            lastError = "请求处理失败：${e.javaClass.simpleName}"
+            Diag.warn(TAG, "$path 运行时异常：${e.javaClass.simpleName}: ${e.message}")
             null
         } finally {
             runCatching { conn?.disconnect() }

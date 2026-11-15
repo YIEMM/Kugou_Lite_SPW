@@ -231,10 +231,15 @@ object ExploreApi {
             ?: return null
         val hash = JsonLite.asString(obj["hash"]) ?: ""
 
-        // 时长：time_length 是秒；timelen 是毫秒，需要 /1000
+        // 时长：time_length 是秒；timelen 是毫秒，需要 /1000。
+        //
+        // 判定必须看**值是否可用**而不是「键是否存在」（N20）：
+        // 上游常给 `time_length: ""`，asInt("")==0 会把后面有效的
+        // 毫秒字段整条挡住，导致播放历史整页时长 `--:--`。
         val durationSec = when {
-            obj["time_length"] != null -> JsonLite.asInt(obj["time_length"])
-            obj["timelen"] != null -> (JsonLite.asLong(obj["timelen"]) / 1000L).toInt()
+            JsonLite.asInt(obj["time_length"]) > 0 -> JsonLite.asInt(obj["time_length"])
+            JsonLite.asLong(obj["timelen"]) > 0L ->
+                (JsonLite.asLong(obj["timelen"]) / 1000L).toInt()
             else -> 0
         }
 

@@ -1,5 +1,6 @@
 package cn.spw.kugou.lite.ui
 
+import java.util.Locale
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -59,7 +60,10 @@ fun ArtistPage() {
     LaunchedEffect(artistId) {
         if (artistId.isBlank()) return@LaunchedEffect
         detailState.load { ExploreApi.artistDetail(artistId) }
-        hotState.load { runCatching { KugouApi.artistSongs(artistId, sort = "hot") }.getOrDefault(emptyList()) }
+        // 不要把 Result 就地抹平成空列表（N23）：网络失败 / 未登录 / JSON 异常
+        // 全都变成 Success(emptyList()) → UI 显示「该歌手暂无歌曲」，
+        // 用户永远不知道该去登录还是重试。这里保留失败态交给 UI 呈现。
+        hotState.load { KugouApi.artistSongs(artistId, sort = "hot") }
         albumState.load { ExploreApi.artistAlbums(artistId) }
     }
     // 详情到达后初始化关注状态：服务端 user_status 或本地记录（R3 关注态不回落）
@@ -178,7 +182,7 @@ private fun HotSongs(state: Async<List<Song>>, showAlbum: Boolean) {
                     Column(Modifier.fillMaxWidth().padding(vertical = 4.dp)) {
                         list.forEachIndexed { index, song ->
                             DataTableRow(
-                                index = "%02d".format(index + 1),
+                                index = String.format(Locale.ROOT, "%02d", index + 1),
                                 coverUrl = song.coverUrl(120),
                                 title = song.title,
                                 subtitle = song.singer,

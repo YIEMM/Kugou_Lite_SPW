@@ -57,7 +57,8 @@ class BugProbeTest {
         // 新命名规则：<净化后的 key>-<请求音质>.<容器扩展名>
         val cached = File(File(base, "audio-cache"), "H-128.flac")
         cached.parentFile.mkdirs()
-        cached.writeBytes(ByteArray(32) { 7 })
+        // N05 修复后 AudioCache 会校验文件头，占位文件必须带合法 FLAC 魔数
+        cached.writeBytes("fLaC".toByteArray(Charsets.ISO_8859_1) + ByteArray(16 * 1024))
         assertTrue(cached.isFile)
 
         val hit = AudioCache.localFileOrNull(song("H"))
@@ -105,12 +106,12 @@ class BugProbeTest {
     // ---------------------------------------------------------------- probe 3
 
     @Test
-    fun `probe03 playCountText 受默认 Locale 影响`() {
+    fun `probe03 playCountText 不受默认 Locale 影响（已修，转为回归断言）`() {
         val old = Locale.getDefault()
         try {
             Locale.setDefault(Locale.GERMANY)
-            // 期望（中文界面）固定用点号；实际跟随默认 Locale 变成逗号
-            assertEquals("1,5万", SquareApi.playCountText(15_000))
+            // 已修（N19）：统一 Locale.ROOT，德语环境也必须用点号
+            assertEquals("1.5万", SquareApi.playCountText(15_000))
         } finally {
             Locale.setDefault(old)
         }

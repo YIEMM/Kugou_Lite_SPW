@@ -223,7 +223,9 @@ fun signedDaysKey(userId: String): String = "welfare_signed_$userId"
 
 /** 服务器时间戳 → `YYYY-MM-DD`（按给定时区偏移，默认 +8）。 */
 fun receiveDayFrom(timestampSec: Long, zoneOffsetHours: Int = 8): String =
-    DateTimeFormatter.ofPattern("yyyy-MM-dd")
+    // Locale.ROOT（N19）：默认 Locale 下部分语言会用非 ASCII 数字，
+    // 而签到接口要求严格的 yyyy-MM-dd。
+    DateTimeFormatter.ofPattern("yyyy-MM-dd", java.util.Locale.ROOT)
         .withZone(ZoneOffset.ofHours(zoneOffsetHours))
         .format(Instant.ofEpochSecond(timestampSec))
 

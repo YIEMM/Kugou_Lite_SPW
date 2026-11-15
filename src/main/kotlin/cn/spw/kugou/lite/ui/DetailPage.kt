@@ -1,5 +1,6 @@
 package cn.spw.kugou.lite.ui
 
+import java.util.Locale
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -481,7 +482,7 @@ private fun SongTableBlock(
                     display.forEachIndexed { index, song ->
                         val noCopyright = noCopyrightHashes[song.hash] == true
                         DataTableRow(
-                            index = "%02d".format(index + 1),
+                            index = String.format(Locale.ROOT, "%02d", index + 1),
                             coverUrl = song.coverUrl(120),
                             title = song.title,
                             subtitle = song.singer,

@@ -86,7 +86,10 @@ object CoverLoader {
             // 先查磁盘缓存
             val dir = cacheDir
             if (dir != null) {
-                val key = url.hashCode().toUInt().toString(16)
+                // 用 SHA-1 前 16 位作缓存键（N14）：
+                // String.hashCode() 只有 32 位，不同封面 URL 完全可能碰撞，
+                // 命中别人的图（表现为封面串台）。
+                val key = sha1Hex(url).take(16)
                 val f = File(dir, "$key.img")
                 if (f.isFile && f.length() > 0) {
                     decode(f.readBytes())?.let { return it }
@@ -132,6 +135,19 @@ object CoverLoader {
         memoryCache.clear()
     }
 }
+
+/**
+ * URL 的 SHA-1 十六进制串（N14）。
+ *
+ * 用作封面磁盘缓存的键：`String.hashCode()` 只有 32 位，不同 URL 碰撞后
+ * 会命中别人的图，表现为「封面串台」。SHA-1 前 16 位（64 bit）足够。
+ */
+private fun sha1Hex(text: String): String =
+    runCatching {
+        java.security.MessageDigest.getInstance("SHA-1")
+            .digest(text.toByteArray(Charsets.UTF_8))
+            .joinToString("") { "%02x".format(it) }
+    }.getOrElse { text.hashCode().toUInt().toString(16) }
 
 /**
  * 记住一张封面并在加载完成后自动重组。

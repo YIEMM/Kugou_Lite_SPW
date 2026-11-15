@@ -1,5 +1,6 @@
 package cn.spw.kugou.lite.ui
 
+import java.util.Locale
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -187,9 +188,9 @@ private fun cacheLabel(entry: CacheEntry): String {
 
 /** 字节数的人类可读形式。 */
 private fun formatCacheSize(bytes: Long): String = when {
-    bytes >= 1024L * 1024 * 1024 -> "%.2f GB".format(bytes / 1024.0 / 1024 / 1024)
-    bytes >= 1024L * 1024 -> "%.1f MB".format(bytes / 1024.0 / 1024)
-    bytes >= 1024L -> "%.0f KB".format(bytes / 1024.0)
+    bytes >= 1024L * 1024 * 1024 -> String.format(Locale.ROOT, "%.2f GB", bytes / 1024.0 / 1024 / 1024)
+    bytes >= 1024L * 1024 -> String.format(Locale.ROOT, "%.1f MB", bytes / 1024.0 / 1024)
+    bytes >= 1024L -> String.format(Locale.ROOT, "%.0f KB", bytes / 1024.0)
     else -> "$bytes B"
 }
 

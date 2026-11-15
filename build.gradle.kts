@@ -1,5 +1,8 @@
 import com.xuncorp.spw.workshop.gradle.PluginPermission
 import org.jetbrains.kotlin.gradle.dsl.JvmTarget
+import java.io.File as JavaFile
+import java.time.LocalDateTime
+import java.time.format.DateTimeFormatter
 
 plugins {
     id("java-library")
@@ -116,6 +119,64 @@ val checkNativeLibs = tasks.register("checkNativeLibs") {
     }
 }
 
-tasks.named("processResources") {
-    dependsOn(checkNativeLibs)
+/**
+ * 构建信息注入（关于页展示 commit）。
+ *
+ * 为什么用生成资源而不是 BuildConfig：
+ * 插件是 PF4J 包，没有 Android 的 BuildConfig 概念；生成一个 properties
+ * 放进 classes 根目录，运行时用 classLoader 读，最简单且不影响增量编译。
+ *
+ * 拿不到 git 信息（例如源码包解压后构建）时降级为 "unknown"，绝不失败。
+ */
+val generateBuildInfo = tasks.register("generateBuildInfo") {
+    description = "生成 build-info.properties（commit / branch / 构建时间）"
+    group = "build"
+
+    val outDir = layout.buildDirectory.dir("generated/buildinfo")
+    outputs.dir(outDir)
+
+    doLast {
+        fun git(vararg args: String): String = try {
+            val proc = ProcessBuilder(listOf("git") + args)
+                .directory(projectDir)
+                .redirectErrorStream(true)
+                .start()
+            val text = proc.inputStream.bufferedReader().readText().trim()
+            proc.waitFor()
+            if (proc.exitValue() == 0 && text.isNotEmpty()) text else "unknown"
+        } catch (e: Exception) {
+            "unknown"
+        }
+
+        val commit = git("rev-parse", "--short=8", "HEAD")
+        val fullCommit = git("rev-parse", "HEAD")
+        val branch = git("rev-parse", "--abbrev-ref", "HEAD")
+        val status = git("status", "--porcelain")
+        val state = when {
+            status == "unknown" -> "unknown"
+            status.isNotEmpty() -> "dirty"
+            else -> "clean"
+        }
+        val time = LocalDateTime.now()
+            .format(DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm"))
+
+        val dir = outDir.get().asFile.apply { mkdirs() }
+        JavaFile(dir, "build-info.properties").writeText(
+            listOf(
+                "commit=$commit",
+                "fullCommit=$fullCommit",
+                "branch=$branch",
+                "state=$state",
+                "builtAt=$time",
+                "version=${project.version}",
+            ).joinToString("\n")
+        )
+        logger.lifecycle("构建信息：$commit ($branch, $state) @ $time")
+    }
+}
+
+tasks.named<ProcessResources>("processResources") {
+    dependsOn(checkNativeLibs, generateBuildInfo)
+    // 把生成的 build-info.properties 直接放进资源根目录
+    from(layout.buildDirectory.dir("generated/buildinfo"))
 }

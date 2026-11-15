@@ -1,5 +1,6 @@
 package cn.spw.kugou.lite.ui
 
+import java.util.Locale
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -555,7 +556,7 @@ private fun SongTableState(state: Async<List<Song>?>, emptyText: String) {
                     Column(Modifier.fillMaxWidth().padding(vertical = 4.dp)) {
                         list.forEachIndexed { i, song ->
                             DataTableRow(
-                                index = "%02d".format(i + 1),
+                                index = String.format(Locale.ROOT, "%02d", i + 1),
                                 coverUrl = song.coverUrl(120),
                                 title = song.title,
                                 subtitle = song.singer,
@@ -600,10 +601,38 @@ internal fun playSongsFromQueue(
         if (stream == null) {
             val reason = KugouApi.lastError ?: "未知原因"
             Diag.warn("[page] 取流失败：$reason")
-            // 取流失败且原因是版权类 → 告知 UI 标为无版权（用户需求）
-            if (reason.contains("版权限制") || reason.contains("会员")) {
-                onUnplayable?.invoke(song, reason)
+
+            // 先看本地缓存（N09）：离线 / 风控 / 未登录时，已缓存的歌完全能播。
+            // 早期这里直接 return，导致「点了没反应」，用户以为插件坏了。
+            val cached = AudioCache.localFileOrNull(song)
+            if (cached != null) {
+                Diag.info("[page] 取流失败但命中本地缓存，直接播放「${song.title}」")
+                val okLocal = PlaybackBridge.playQueue(
+                    queue, index, { s -> KugouApi.streamUrl(s) }, cached,
+                )
+                if (!okLocal) {
+                    // 本地文件已就绪，不需要真实流地址
+                    PlaybackBridge.play(
+                        song,
+                        cn.spw.kugou.lite.sidecar.StreamInfo(
+                            url = "",
+                            backupUrls = emptyList(),
+                            bitRate = 0,
+                            fileSize = 0,
+                            extName = "mp3",
+                            durationSec = 0,
+                        ),
+                        cached,
+                    )
+                }
+                TrackWatcher.updateQueue(queue, index, needMore)
+                TrackWatcher.start()
+                return@run
             }
+
+            // 无缓存可用：必须让用户知道为什么没反应（N09）。
+            // 版权/会员类原因沿用原有的「标无版权」回调，其余原因也提示。
+            onUnplayable?.invoke(song, reason)
             return@run
         }
         // 先取歌词，再让 AudioCache 一并补齐（音频 + 封面 + 逐字歌词）

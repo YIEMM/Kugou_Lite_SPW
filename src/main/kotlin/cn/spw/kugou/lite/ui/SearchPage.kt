@@ -1,5 +1,6 @@
 package cn.spw.kugou.lite.ui
 
+import java.util.Locale
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -259,7 +260,7 @@ private fun SongResultList(
                         Column(Modifier.fillMaxWidth().padding(vertical = 4.dp)) {
                             result.songs.forEachIndexed { index, song ->
                                 DataTableRow(
-                                    index = "%02d".format(index + 1),
+                                    index = String.format(Locale.ROOT, "%02d", index + 1),
                                     coverUrl = song.coverUrl(120),
                                     title = song.title,
                                     subtitle = song.singer,

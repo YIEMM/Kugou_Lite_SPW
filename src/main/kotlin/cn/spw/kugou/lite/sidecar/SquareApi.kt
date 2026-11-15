@@ -94,7 +94,9 @@ object SquareApi {
     internal fun playCountText(count: Long): String = when {
         count >= 10_000 -> {
             val w = count / 10_000.0
-            val v = if (w >= 100) w.toInt().toString() else String.format("%.1f", w).removeSuffix(".0")
+            // Locale.ROOT（N19）：de 环境下 "%.1f" 得 "1,5"，removeSuffix(".0") 失效，
+            // 会显示成 "1,5万"；ar 下更是完全不可读。
+            val v = if (w >= 100) w.toInt().toString() else String.format(java.util.Locale.ROOT, "%.1f", w).removeSuffix(".0")
             "${v}万"
         }
         else -> count.toString()

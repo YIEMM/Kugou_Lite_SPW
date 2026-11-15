@@ -1,5 +1,7 @@
 package cn.spw.kugou.lite.sidecar
 
+import java.util.Locale
+
 /**
  * 酷狗 API 返回的数据模型。
  *
@@ -138,7 +140,7 @@ data class Song(
             if (durationSec <= 0 || durationSec > 86_400) return "--:--"
             val m = durationSec / 60
             val s = durationSec % 60
-            return "%d:%02d".format(m, s)
+            return String.format(Locale.ROOT, "%d:%02d", m, s)
         }
 
     /** 把封面模板 URL 的 `{size}` 换成实际像素。 */

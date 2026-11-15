@@ -34,12 +34,34 @@ object ApiExec {
 
     private val counter = AtomicInteger(0)
 
-    private val pool = Executors.newFixedThreadPool(3) { runnable ->
-        Thread(runnable, "kugou-lite-api-${counter.incrementAndGet()}").apply {
-            // 守护线程：宿主退出时不阻止 JVM 关闭
-            isDaemon = true
-            // 低优先级，别和 UI 渲染抢 CPU
-            priority = Thread.MIN_PRIORITY + 2
+    /**
+     * 线程池。**可重建**（N18）。
+     *
+     * 早期是 `private val`：`shutdown()` 之后没有任何重建路径，于是同一进程内
+     * 「工坊里禁用 → 再启用」之后，每次提交都抛 RejectedExecutionException
+     * 被静默吞掉，而调用方已把状态置成 Loading —— 所有页面永久「正在加载…」。
+     */
+    @Volatile
+    private var pool: java.util.concurrent.ExecutorService? = null
+
+    private val poolLock = Any()
+
+    /** 取线程池；已关闭则重建。 */
+    private fun ensurePool(): java.util.concurrent.ExecutorService {
+        pool?.let { if (!it.isShutdown) return it }
+        synchronized(poolLock) {
+            pool?.let { if (!it.isShutdown) return it }
+            val created = Executors.newFixedThreadPool(3) { runnable ->
+                Thread(runnable, "kugou-lite-api-${counter.incrementAndGet()}").apply {
+                    // 守护线程：宿主退出时不阻止 JVM 关闭
+                    isDaemon = true
+                    // 低优先级，别和 UI 渲染抢 CPU
+                    priority = Thread.MIN_PRIORITY + 2
+                }
+            }
+            pool = created
+            Diag.info(TAG, "线程池已就绪")
+            return created
         }
     }
 
@@ -51,27 +73,39 @@ object ApiExec {
      */
     fun <T> run(onResult: (Result<T>) -> Unit, block: () -> T) {
         try {
-            pool.execute {
+            ensurePool().execute {
                 val result = try {
                     Result.success(block())
-                } catch (e: Exception) {
-                    Diag.warn(TAG, "后台任务异常：${e.message}")
+                } catch (e: Throwable) {
+                    // 捕获 Throwable：StackOverflowError（N03）这类 Error
+                    // 若漏出去会让工作线程静默死亡，页面永久「加载中」。
+                    Diag.warn(TAG, "后台任务异常：${e.javaClass.simpleName}: ${e.message}")
                     Result.failure(e)
                 }
                 try {
                     onResult(result)
-                } catch (e: Exception) {
-                    Diag.warn(TAG, "回传结果异常：${e.message}")
+                } catch (e: Throwable) {
+                    Diag.warn(TAG, "回传结果异常：${e.javaClass.simpleName}: ${e.message}")
                 }
             }
-        } catch (e: Exception) {
-            // 线程池已关闭（插件卸载中）时忽略
-            Diag.warn(TAG, "提交任务失败：${e.message}")
+        } catch (e: Throwable) {
+            // 提交失败**必须回传**（N18）：否则调用方停在 Loading 永不恢复。
+            Diag.warn(TAG, "提交任务失败：${e.javaClass.simpleName}: ${e.message}")
+            runCatching { onResult(Result.failure(e)) }
         }
     }
 
+    /**
+     * 关闭线程池。**之后仍可再次 run()** —— [ensurePool] 会自动重建（N18）。
+     *
+     * 插件在工坊里被「禁用 → 再启用」时走的就是这条路径，
+     * 若不可重建则所有页面永久「正在加载…」。
+     */
     fun shutdown() {
-        runCatching { pool.shutdownNow() }
+        synchronized(poolLock) {
+            runCatching { pool?.shutdownNow() }
+            pool = null
+        }
     }
 }
 

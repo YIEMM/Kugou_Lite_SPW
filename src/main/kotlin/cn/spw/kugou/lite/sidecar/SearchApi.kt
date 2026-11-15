@@ -123,7 +123,10 @@ object SearchApi {
         return arr.mapNotNull { item ->
             val obj = JsonLite.asObject(item) ?: return@mapNotNull null
             val name = stripEm(JsonLite.asString(obj["singername"]) ?: return@mapNotNull null)
+            // 缺 singerid 时 asLong 得 0，Artist(id="0") 仍非空 → 卡片可点 →
+            // /artist/detail?id=0 → 空白页无提示（N21）。id 无效就直接丢弃该条。
             val id = JsonLite.asLong(obj["singerid"])
+            if (id <= 0L) return@mapNotNull null
             Artist(id = id.toString(), name = name, avatarUrl = null)
         }
     }

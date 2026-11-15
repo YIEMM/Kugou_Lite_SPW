@@ -50,7 +50,27 @@ fun preferSameSinger(candidates: List<SearchHit>, singer: String): SearchHit? {
     if (candidates.isEmpty()) return null
     val exact = candidates.filter { !it.title.contains("(") && !it.title.contains("（") }
     val pool = exact.ifEmpty { candidates }
-    return pool.firstOrNull { it.singer.equals(singer, ignoreCase = true) }
-        ?: pool.firstOrNull { singer.isNotBlank() && (it.singer.contains(singer) || singer.contains(it.singer)) }
-        ?: pool.firstOrNull()
+    val bySinger = pool.firstOrNull { it.singer.equals(singer, ignoreCase = true) }
+        ?: pool.firstOrNull {
+            singer.isNotBlank() && (it.singer.contains(singer) || singer.contains(it.singer))
+        }
+    if (bySinger != null) return bySinger
+
+    // 歌手为空时**不要**退化成「取第一条」（N22）。
+    //
+    // 云歌单里未发布音频会走到这里做回退，而 `singerFromComposite` 对
+    // 「我们的歌.mp3」这种没有「歌手 - 」前缀的文件名返回空串。早期
+    // `singer.isNotBlank()` 短路掉歌手校验后直接 `pool.firstOrNull()`，
+    // 而上游搜索排序的第一条完全可能是别人的翻唱 —— 这正是用户反馈
+    // 「音频不对」的来源。歌手为空意味着「无从判断」，宁可返回 null
+    // 让上层报「该曲目不可用」，也不要随便给一首。
+    if (singer.isBlank()) return null
+
+    // 歌手已知但不匹配：仍接受**唯一**的精确歌名候选。
+    //
+    // 这是既有设计（见 CloudAudioFallbackTest）：同名不同歌手的官方
+    // 版本通常比「完全播不了」更有用，且已由上面「精确歌名优先」过滤掉
+    // 了带 (DJ版) 之类后缀的杂项。仅在候选唯一时才这么做，避免在多个
+    // 不确定项里瞎猜。
+    return pool.singleOrNull()
 }

@@ -1,5 +1,6 @@
 package cn.spw.kugou.lite.sidecar
 
+import java.util.Locale
 import cn.spw.kugou.lite.diag.Diag
 import java.io.File
 import java.io.IOException
@@ -85,7 +86,7 @@ internal object NativeLibExtractor {
         NativeLibExtractor::class.java.classLoader?.getResourceAsStream("native/$name")?.use { it.readBytes() }
 
     private fun sha256(bytes: ByteArray): String =
-        MessageDigest.getInstance("SHA-256").digest(bytes).joinToString("") { "%02x".format(it) }
+        MessageDigest.getInstance("SHA-256").digest(bytes).joinToString("") { String.format(Locale.ROOT, "%02x", it) }
 
     /**
      * 在 JVM 里改环境变量。
