@@ -55,6 +55,10 @@ sidecar/bridge/build/
 # 打包前必须跑 build_native.ps1（Gradle 的 checkNativeLibs 会校验）。
 src/main/resources/native/*.dll
 
+# JVM 崩溃日志（宿主 jlink 运行时偶发 jimage.dll 访问违例，属运行时产物）
+hs_err_pid*.log
+replay_pid*.log
+
 # Brainstorm visual companion session files (prototype HTML, event log)
 .superpowers/
 commit-msg.txt

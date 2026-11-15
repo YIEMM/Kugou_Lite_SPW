@@ -1,6 +1,7 @@
 package cn.spw.kugou.lite.sidecar
 
 import java.util.Base64 as JBase64
+import java.util.Locale
 
 /**
  * 酷狗 KRC（逐字歌词）解析与转换。
@@ -318,6 +319,11 @@ object KrcLyrics {
         val mm = totalSec / 60
         val ss = totalSec % 60
         val cs = (ms % 1000) / 10
-        return "%02d:%02d.%02d".format(mm, ss, cs)
+        // 必须显式指定 Locale.ROOT：Kotlin 的 String.format 默认取
+        // Locale.getDefault()，在 ar / fa / bn 等「本地数字形态」环境下
+        // %d 会输出 U+0660..U+0669 之类的本地数字，写出的 .lrc 时间戳
+        // 不再匹配 [mm:ss.xx] —— 宿主解析失败，整首无歌词。
+        // 这类文件内容本身就是坏的，换任何读取时机都救不回来。
+        return String.format(Locale.ROOT, "%02d:%02d.%02d", mm, ss, cs)
     }
 }
