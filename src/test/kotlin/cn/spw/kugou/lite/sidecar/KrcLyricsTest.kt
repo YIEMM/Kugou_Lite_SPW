@@ -62,7 +62,9 @@ class KrcLyricsTest {
     @Test
     fun `没有中文译文时退化为显示罗马音`() {
         val lrc = KrcLyrics.toEnhancedLrc(romajiOnly, withTranslation = true)
-        assertTrue(lrc.contains("[00:00.49]mi"), "应含罗马音行，实际：\n$lrc")
+        // 译文/罗马音行必须与原文行**同时间戳**：宿主靠它把下一行识别为
+        // 上一行的 pureSubText，渲染在下方。
+        assertTrue(lrc.contains("[00:00.49]mi"), "应含罗马音行且与原文同时间戳，实际：\n$lrc")
         assertFalse(lrc.contains("[language:"), "不应残留 language 段")
     }
 
@@ -170,7 +172,8 @@ class KrcLyricsTest {
         val lines = lrc.lines().filter { it.startsWith("[") && !it.startsWith("[ti:") }
         // 应有两行：原文行 + 翻译行
         assertTrue(lines.size >= 2, "实际：\n$lrc")
-        assertTrue(lrc.contains("[00:01.00]中文意思"), "翻译行应带行时间，实际：\n$lrc")
+        // 必须与原文行同时间戳：宿主靠它把译文并入 pureSubText
+        assertTrue(lrc.contains("[00:01.00]中文意思"), "翻译行应复用原文行时间，实际：\n$lrc")
     }
 
     @Test

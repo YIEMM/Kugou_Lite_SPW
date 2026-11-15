@@ -17,7 +17,7 @@ import kotlin.test.assertTrue
 class KugouLyricsExtensionTest {
 
     @Test
-    fun `KRC 登记后转成纯文本 LRC`() {
+    fun `KRC 登记后保留逐字标记`() {
         val krc = listOf(
             "[ti:Test]",
             "[offset:0]",
@@ -25,8 +25,10 @@ class KugouLyricsExtensionTest {
         ).joinToString("\n")
         LyricsRegistry.put("kugou-TEST", krc)
         val text = LyricsRegistry.get("kugou-TEST").orEmpty()
-        assertFalse(text.contains("<00:"), "不应残留逐字标记")
-        assertTrue(text.contains("Hello") && text.contains("World"))
+        // 宿主靠 <mm:ss.xx> 逐字单元渲染逐字高亮，**必须保留**。
+        // 早期误用 toPlainLrc 剥掉标记 → 退化成整行高亮（用户反馈「逐字歌词呢」）。
+        assertTrue(text.contains("<00:00.00>Hello"), "必须保留逐字标记：\n" + text)
+        assertTrue(text.contains("<00:00.50>World"))
         assertTrue(text.contains("[00:00.00]"), "行时间戳要保留")
     }
 

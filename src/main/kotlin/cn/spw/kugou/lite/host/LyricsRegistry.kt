@@ -45,8 +45,13 @@ object LyricsRegistry {
     /** 登记歌词；KRC 会转成纯文本逐行 LRC（不带逐字标记）。 */
     fun put(trackId: String, raw: String?) {
         if (trackId.isBlank() || raw.isNullOrBlank()) return
+        // **必须用增强 LRC（保留 <mm:ss.xx> 逐字标记）**，不能转纯文本。
+        //
+        // 宿主的歌词模型是 LyricsLine + LyricsCell（逐字单元），喂带标记的
+        // 增强 LRC 才有逐字高亮。早期这里误用了 toPlainLrc（那是给 USLT
+        // 内嵌纯文本用的），导致走扩展点时逐字歌词退化成整行高亮。
         val text = if (cn.spw.kugou.lite.sidecar.KrcLyrics.isKrc(raw)) {
-            cn.spw.kugou.lite.sidecar.KrcLyrics.toPlainLrc(raw)
+            cn.spw.kugou.lite.sidecar.KrcLyrics.toEnhancedLrc(raw)
         } else raw
         if (text.isNotBlank()) {
             byId[trackId] = text

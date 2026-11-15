@@ -193,9 +193,17 @@ object KrcLyrics {
     /**
      * 把 KRC 转成**纯文本**逐行 LRC（不带 `<mm:ss.xx>` 逐字标记）。
      *
-     * 用途：通过 `PlaybackExtensionPoint.updateLyrics` 直接投喂宿主。
-     * 宿主内部按 LRC 文本解析，逐字标记会当成普通字符显示。
-     * 实现复用 [toEnhancedLrc] 再剥掉 `<...>` 单元，时间戳与译文保持一致。
+     * ## 只用于「纯文本」场景
+     *
+     * 目前唯一的正当用途是往音频文件写 **ID3 USLT 帧**：USLT 是纯文本，
+     * 逐字标记会被当普通字符显示出来。
+     *
+     * ## ⚠️ 不要用在 PlaybackExtensionPoint 上
+     *
+     * 宿主 `updateLyrics` / `onBeforeLoadLyrics` 的返回值会喂给它的逐字
+     * 歌词模型（`LyricsLine` + `LyricsCell`），必须用 [toEnhancedLrc] 保留
+     * `<mm:ss.xx>` 标记才有逐字高亮。早期误用本函数导致逐字歌词退化
+     * 成整行高亮（用户反馈「我的逐字歌词呢？」）。
      */
     fun toPlainLrc(krc: String): String =
         WORD_PATTERN_LRC.replace(toEnhancedLrc(krc), "")
@@ -267,7 +275,19 @@ object KrcLyrics {
                 out.appendLine()
             }
 
-            // 翻译行：紧跟在原文后，使用同一个行时间
+            // 翻译行：紧跟在原文后，**必须复用原文行的同一时间戳**。
+            //
+            // 宿主的歌词模型是「一行 = 主文本 + 副文本」：
+            //
+            //     LyricsLine(startTime, endTime, lyricsCells, pureMainText, pureSubText)
+            //
+            // 它靠**相同时间戳**把紧随其后的一行识别为上一行的译文，
+            // 填进 `pureSubText`，渲染时译文显示在主文本下方（受宿主设置项
+            // `show_player_lyrics_sub_text` 控制），逐字单元则来自主文本行。
+            //
+            // 曾误改成 +10ms「避免时间戳重复」，结果译文被当成**独立的歌词行**：
+            // 主文本与译文交替出现，逐字也失效（用户反馈「我的逐字歌词呢」）。
+            // 时间戳必须一致。
             val tr = translation.getOrNull(lineIndex)?.trim().orEmpty()
             if (tr.isNotEmpty()) {
                 out.append(formatTime(lineStart)).appendLine(tr)

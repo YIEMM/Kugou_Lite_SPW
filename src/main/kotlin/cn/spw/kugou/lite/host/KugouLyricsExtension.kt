@@ -46,10 +46,11 @@ class KugouLyricsExtension : PlaybackExtensionPoint {
 
         // 还没就绪（歌词接口在途）：有界等待，避免宿主问到空结果后永不重试。
         val hit = LyricsRegistry.awaitLyrics(id, WAIT_MS)
-        cn.spw.kugou.lite.diag.Diag.info(
-            "lyricsext",
-            "宿主查询歌词 id=$id 命中=${hit != null} 长度=${hit?.length ?: 0}",
-        )
+        if (hit == null) {
+            // 只在未命中时记一条：宿主只问一次，这里为空意味着该曲目最终无歌词，
+            // 是排查「这首为什么没歌词」的唯一线索。
+            cn.spw.kugou.lite.diag.Diag.warn("lyricsext", "宿主查询歌词未命中 id=$id（等待 ${WAIT_MS}ms 后仍无）")
+        }
         return hit
     }
 

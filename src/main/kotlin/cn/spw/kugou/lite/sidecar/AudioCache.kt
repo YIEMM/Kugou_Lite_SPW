@@ -45,8 +45,11 @@ import java.net.URI
  * - v5：丢弃 `[total:]`。它的值是 0 时宿主把歌词时长算成 0，
  *   直接判为「无歌词」（用户反馈「第一次播放仍然没有歌词」，
  *   带 `[total:0]` 的文件全部中招）。
+ * - v7：翻译行**必须与原文行同时间戳**。v6 曾把译文改成 +10ms，
+ *   导致宿主把译文当成独立歌词行（主/译文交替、逐字失效）。
+ *   宿主靠相同时间戳把下一行识别为上一行的 `pureSubText`。
  */
-const val LRC_GENERATOR_VERSION = "v5"
+const val LRC_GENERATOR_VERSION = "v7"
 
 /** 生成器标记，写进 `[by:]` 标签。 */
 private const val GENERATOR_TAG = "KugouLite/$LRC_GENERATOR_VERSION"
