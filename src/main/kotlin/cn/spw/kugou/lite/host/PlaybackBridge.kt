@@ -282,13 +282,19 @@ private const val QUEUE_FILL_AHEAD = 3
             // 把本来能播的歌误判为不可播。真正取不到地址的曲目，
             // 由 fillQueuePathsAsync 在后台补齐失败时从队列剔除
             // （见 removeFromQueue）—— 只在真实失败后处理，不预先猜测。
+            // 记录每条是否成功构造，用于过滤后重算当前下标（N13）。
+            // 早期直接 `setQueueList(ctrl, items, idx)`：items 被 filterNotNull
+            // 缩短后 idx 仍按原列表算，一旦中间有条目被过滤，下标就指向另一首歌
+            // —— 表现为「切歌后播的不是点的那首」或无声。
+            val kept = BooleanArray(songs.size)
             val items = songs.mapIndexed { i, s ->
                 val trackId = buildTrackId(s)
                 val path = if (i == idx) currentPath else cachedLocalPath(s) ?: ""
-                newMediaItem(s, trackId, path)
+                newMediaItem(s, trackId, path).also { kept[i] = it != null }
             }.filterNotNull()
 
             if (items.isEmpty()) return false
+            val startAt = QueueIndexPolicy.remap(kept.toList(), idx)
 
             // 告诉扩展点当前曲目，宿主给的 MediaItem.id 偶尔为空时可兜底命中。
             LyricsRegistry.markCurrent(buildTrackId(currentSong))
@@ -316,7 +322,7 @@ private const val QUEUE_FILL_AHEAD = 3
             // updateItem + setAudioSource + prepare + play，
             // 导致同一首歌被加载两次：宿主开始播 0.3 秒后，
             // 第二次加载把它重置回 0 秒重新开始 —— 就是用户说的「抖动」。
-            setQueueList?.invoke(ctrl, items, idx)
+            setQueueList?.invoke(ctrl, items, startAt)
 
             // 记录每项入队时的 path：切歌时用它判断宿主此前能否加载成功
             // （空占位 = 加载必然失败 → 需要重建音频源）。见 TrackStartPolicy。
@@ -374,16 +380,30 @@ private const val QUEUE_FILL_AHEAD = 3
             val idx = allSongs.indexOfFirst { buildTrackId(it) == currentTrackId }
                 .takeIf { it >= 0 } ?: 0
 
-            // 用已缓存的本地路径建项；没缓存的新歌留空由后台补
+            // 建项时 path 的选择见 QueueIndexPolicy.pathFor（N13）：
+            //
+            // 早期这里写的是 `if (i == idx) cachedLocalPath(s) ?: "" else cachedLocalPath(s) ?: ""`
+            // —— 两个分支**完全相同**，等于没区分当前曲目。而流式播放的曲目没有
+            // 本地缓存，重建队列后当前项 path 变成空串，宿主拿不到音频地址，
+            // 正在播的歌静音或从头重来。
+            //
+            // 现在：当前曲目优先用上次入队时宿主在用的地址（lastQueuedPath），
+            // 缓存路径作兜底；其余曲目只用缓存路径，没缓存留空由后台补。
+            val kept = BooleanArray(allSongs.size)
             val items = allSongs.mapIndexed { i, s ->
-                val path = if (i == idx) cachedLocalPath(s) ?: "" else cachedLocalPath(s) ?: ""
-                newMediaItem(s, buildTrackId(s), path)
+                val path = QueueIndexPolicy.pathFor(
+                    isCurrent = i == idx,
+                    lastQueuedPath = lastQueuedPath[buildTrackId(s)],
+                    cachedPath = cachedLocalPath(s),
+                )
+                newMediaItem(s, buildTrackId(s), path).also { kept[i] = it != null }
             }.filterNotNull()
 
             if (items.isEmpty()) return false
 
-            setQueueList?.invoke(ctrl, items, idx)
-            Diag.info(TAG, "已追加队列：共 ${items.size} 首，当前仍为第 ${idx + 1} 首「${allSongs[idx].title}」")
+            val startAt = QueueIndexPolicy.remap(kept.toList(), idx)
+            setQueueList?.invoke(ctrl, items, startAt)
+            Diag.info(TAG, "已追加队列：共 ${items.size} 首，当前仍为第 ${startAt + 1} 首「${allSongs[idx].title}」")
 
             // 只补新歌的 path，跳过正在播的那首（updateMediaItems 会打断播放）
             fillQueuePathsAsync(ctrl, allSongs, idx, resolveStream)

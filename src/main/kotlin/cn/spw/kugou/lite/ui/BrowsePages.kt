@@ -563,6 +563,7 @@ private fun SongTableState(state: Async<List<Song>?>, emptyText: String) {
                                 album = song.albumName,
                                 duration = song.durationText,
                                 onRowClick = { playSongsFromQueue(list, i) },
+                                favorite = song,
                             )
                         }
                     }
@@ -670,92 +671,6 @@ internal fun playSongsFromQueue(
 private fun onSongPicked(queue: List<Song>, index: Int) = playSongsFromQueue(queue, index)
 
 /**
- * 一行歌曲：封面 + 歌名 + 歌手·时长 + 收藏按钮。
- *
- * 封面来自酷狗 CDN（`trans_param.union_cover` 的 `{size}` 已替换成 120px），
- * 由 [CoverLoader] 异步加载 + 两级缓存。加载中/失败时显示音符占位块，
- * 保证行高稳定，不会因为图片加载而跳动。
- *
- * ## 每位歌手单独可点
- *
- * 一首歌常有多个歌手（`A、B、C`）。早期把它们当成**一个整体标签**，
- * 点击只能跳到第一位歌手，其余几位点不到。
- *
- * 现在按 [Song.artists] 逐位渲染：有 id 的用主色且可点，
- * 没 id 的（歌单接口不提供）用次要色且不可点，中间用顿号分隔。
- * 用 [FlowRow] 而不是 [Row]，歌手多时能自动换行，不会溢出。
- *
- * ## 收藏按钮
- *
- * 右侧的 ♡ / ♥ 点击切换「我喜欢」状态。用字符而不是图标，
- * 避免依赖宿主图标资源（宿主图标类名被混淆，不稳定）。
- * 未登录时点了会提示需要登录。
- */
-@OptIn(ExperimentalLayoutApi::class)
-@Composable
-internal fun SongRow(song: Song, onClick: () -> Unit) {
-    Row(
-        Modifier
-            .fillMaxWidth()
-            .clickable { onClick() }
-            .padding(horizontal = 16.dp, vertical = 8.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        SongCover(song.coverUrl(120))
-        Column(Modifier.padding(start = 12.dp).weight(1f)) {
-            Text3(text = song.title, color = KugouTheme.colors.text)
-
-            FlowRow(
-                modifier = Modifier.padding(top = 2.dp),
-                verticalArrangement = Arrangement.Center,
-            ) {
-                val artists = song.artists.ifEmpty {
-                    // 兜底：接口没给结构，就展示拼接好的整串，不可点
-                    listOf(ArtistRef(name = song.singer))
-                }
-                artists.forEachIndexed { index, artist ->
-                    if (index > 0) {
-                        Text3("、", color = KugouTheme.colors.muted)
-                    }
-                    if (artist.clickable) {
-                        Text3(
-                            text = artist.name,
-                            color = KugouTheme.colors.text,
-                            modifier = Modifier.clickable {
-                                PageNav.openArtist(artist.id, artist.name)
-                            },
-                        )
-                    } else {
-                        Text3(text = artist.name, color = KugouTheme.colors.muted)
-                    }
-                }
-                if (song.durationSec > 0) {
-                    Text3(text = " · ${song.durationText}", color = KugouTheme.colors.muted)
-                }
-                // 专辑名可点（有 albumId 时）；用「·」与时长分隔开，
-                // 避免和上面一行歌手挤在一起。
-                val album = song.albumName
-                if (!album.isNullOrBlank()) {
-                    Text3(text = " · ", color = KugouTheme.colors.muted)
-                    if (song.albumId.isNotBlank()) {
-                        Text3(
-                            text = album,
-                            color = KugouTheme.colors.text,
-                            modifier = Modifier.clickable {
-                                PageNav.openAlbum(song.albumId, album)
-                            },
-                        )
-                    } else {
-                        Text3(text = album, color = KugouTheme.colors.muted)
-                    }
-                }
-            }
-        }
-        FavoriteButton(song)
-    }
-}
-
-/**
  * 收藏按钮。
  *
  * ## 状态来源
@@ -769,7 +684,7 @@ internal fun SongRow(song: Song, onClick: () -> Unit) {
  * 而且天然支持主题着色。
  */
 @Composable
-private fun FavoriteButton(song: Song) {
+internal fun FavoriteButton(song: Song) {
     var favorited by remember(song.hash) { mutableStateOf(false) }
     var busy by remember(song.hash) { mutableStateOf(false) }
 
@@ -820,29 +735,6 @@ private fun FavoriteButton(song: Song) {
     )
 }
 
-/** 列表行的小封面（48dp 圆角方块），无图时显示音符占位。 */
-@Composable
-private fun SongCover(url: String?) {
-    val bitmap = rememberCover(url)
-    Box(
-        Modifier
-            .size(48.dp)
-            .background(KugouTheme.colors.coverPlaceholder, RoundedCornerShape(6.dp)),
-        contentAlignment = Alignment.Center,
-    ) {
-        if (bitmap != null) {
-            Image(
-                bitmap = bitmap,
-                contentDescription = null,
-                contentScale = ContentScale.Crop,
-                modifier = Modifier.size(48.dp).clip(RoundedCornerShape(6.dp)),
-            )
-        } else {
-            // 占位音符：与播放栏的 ♪ 呼应，避免空白方块
-            Text3(text = "♪", color = KugouTheme.colors.faint)
-        }
-    }
-}
 
 /** 列表行（纯展示，可选点击）。 */
 @Composable

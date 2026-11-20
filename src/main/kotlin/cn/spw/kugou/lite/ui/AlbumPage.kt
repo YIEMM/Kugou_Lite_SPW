@@ -106,6 +106,7 @@ fun AlbumPage() {
                                     duration = song.durationText,
                                     showAlbum = false,
                                     onRowClick = { playSongsFromQueue(list, index) },
+                                    favorite = song,
                                 )
                             }
                         }

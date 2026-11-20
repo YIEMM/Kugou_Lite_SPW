@@ -462,6 +462,18 @@ object KugouApi {
      */
     private const val MY_FAVORITES_LIST_ID = "2"
 
+    /** 「我喜欢」状态缓存（N11）：整张歌单只在 TTL 过期后拉一次。 */
+    private val favoriteCache = FavoriteCache()
+
+    /**
+     * 拉取「我喜欢」整张的互斥锁。
+     *
+     * 列表首屏时多行的 LaunchedEffect 会**同时**发起查询，若各自读到
+     * shouldRefresh() 为 true 就会重复拉取整张歌单。加一道 double-check：
+     * 拿到锁后再看一次，已拉过就复用。
+     */
+    private val favoriteRefreshLock = Any()
+
     /** 「我喜欢」歌单的 global_collection_id 形式。 */
     private fun favoritesCollectionId(): String? = buildCollectionId(MY_FAVORITES_LIST_ID)
 
@@ -477,11 +489,16 @@ object KugouApi {
      *
      * @return 成功返回 true
      */
-    fun addToFavorites(song: Song): Boolean = addToPlaylist(MY_FAVORITES_LIST_ID, song)
+    fun addToFavorites(song: Song): Boolean =
+        addToPlaylist(MY_FAVORITES_LIST_ID, song).also { ok ->
+            if (ok) favoriteCache.setFavorite(favoriteKey(song), true)
+        }
 
     /** 把歌曲移出「我喜欢」。 */
     fun removeFromFavorites(song: Song): Boolean =
-        removeFromPlaylist(MY_FAVORITES_LIST_ID, song)
+        removeFromPlaylist(MY_FAVORITES_LIST_ID, song).also { ok ->
+            if (ok) favoriteCache.setFavorite(favoriteKey(song), false)
+        }
 
     /**
      * 把歌曲加入指定歌单。
@@ -617,18 +634,44 @@ object KugouApi {
     /**
      * 判断歌曲是否已在「我喜欢」里。
      *
-     * 通过读「我喜欢」的曲目列表 + hash 比对实现。
-     * 列表通常不长（几十到几百首），一次性取回即可。
+     * ## 缓存（N11）
+     *
+     * 早期每次调用都 `playlistSongs(cid, pageSize = 500)` —— 为回答「这一首
+     * 收藏了吗」把整张「我喜欢」拉一遍。收藏按钮接进列表后，每行一个
+     * `LaunchedEffect`：20 行 = 20 次 500 条请求，既慢又必然触发上游频控。
+     *
+     * 现在整张结果进 [favoriteCache]，TTL 内不再重复拉；收藏/取消时就地
+     * 改缓存（见 [addToFavorites] / [removeFromFavorites]），界面立刻一致。
      */
     fun isFavorite(song: Song): Boolean {
         val cid = favoritesCollectionId() ?: return false
-        val target = song.hash.ifBlank { song.albumAudioId }
+        val target = favoriteKey(song)
         if (target.isBlank()) return false
-        return playlistSongs(cid, pageSize = 500).any {
-            it.hash.equals(target, ignoreCase = true) ||
-                it.albumAudioId.equals(target, ignoreCase = true)
+        if (favoriteCache.shouldRefresh()) {
+            // double-check：首屏多行并发时，只有第一个拿锁的线程真正拉取。
+            synchronized(favoriteRefreshLock) {
+                if (!favoriteCache.shouldRefresh()) return favoriteCache.contains(target)
+                // 拉取失败（离线/风控）时保留旧缓存，不要清空 —— 否则整列表的
+                // 爱心会在网络抖动时集体熄灭。
+                runCatching {
+                    val hashes = HashSet<String>()
+                    playlistSongs(cid, pageSize = 500).forEach { s ->
+                        s.hash.takeIf { it.isNotBlank() }?.let(hashes::add)
+                        s.albumAudioId.takeIf { it.isNotBlank() }?.let(hashes::add)
+                    }
+                    favoriteCache.put(hashes)
+                }
+            }
         }
+        return favoriteCache.contains(target)
     }
+
+    /** 收藏判定的比对键：hash 优先，其次 albumAudioId。 */
+    internal fun favoriteKey(song: Song): String =
+        song.hash.ifBlank { song.albumAudioId }
+
+    /** 作废收藏缓存（退出登录/切换账号时调用）。 */
+    fun invalidateFavoriteCache() = favoriteCache.invalidate()
 
     // ---------------------------------------------------------------- 歌手
     /**

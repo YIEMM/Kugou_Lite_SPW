@@ -518,6 +518,7 @@ private fun SongTableBlock(
                                     { PageNav.openAlbum(song.albumId, song.albumName ?: "专辑") }
                                 } else null,
                             ),
+                            favorite = song,
                         )
                     }
                 }

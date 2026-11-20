@@ -28,6 +28,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.geometry.Offset
+import cn.spw.kugou.lite.sidecar.Song
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.input.pointer.PointerEventType
 import androidx.compose.ui.input.pointer.onPointerEvent
@@ -260,6 +261,16 @@ internal fun DataTableRow(
     cells: DataTableCells = DataTableCells(),
     /** 行尾小标签，如「无版权」；null 表示不显示。 */
     badge: String? = null,
+    /**
+     * 传入时在行尾显示收藏按钮（N11）。
+     *
+     * 早期收藏按钮只存在于 `SongRow`，而 `SongRow` **全项目没有调用点** ——
+     * 等于「收藏」这个功能在界面上完全不可达（旧状态表却把它记为已修）。
+     * 现在挂到实际在用的 [DataTableRow] 上。
+     *
+     * 查询走 [KugouApi.isFavorite] 的缓存，不会每行拉一遍整张「我喜欢」。
+     */
+    favorite: Song? = null,
 ) {
     val c = KugouTheme.colors
     var hovered by remember { mutableStateOf(false) }
@@ -331,6 +342,8 @@ internal fun DataTableRow(
                 Text3(text = badge, color = c.faint, maxLines = 1)
             }
         }
+        // 收藏按钮（N11）：只有传了 favorite 的行才显示
+        if (favorite != null) FavoriteButton(favorite)
         Text3(
             text = duration,
             color = c.muted,

@@ -268,6 +268,7 @@ private fun SongResultList(
                                     duration = song.durationText,
                                     showAlbum = showAlbum,
                                     onRowClick = { onPick(song, result.songs, index) },
+                                    favorite = song,
                                 )
                             }
                         }

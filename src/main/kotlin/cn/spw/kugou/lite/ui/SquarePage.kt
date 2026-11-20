@@ -191,6 +191,7 @@ fun HistoryPage() {
                                             album = song.albumName,
                                             duration = song.durationText,
                                             onRowClick = { playSongsFromQueue(day.songs, i) },
+                                            favorite = song,
                                         )
                                     }
                                 }
