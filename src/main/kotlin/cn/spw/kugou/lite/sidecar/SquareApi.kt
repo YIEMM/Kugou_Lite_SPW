@@ -146,18 +146,34 @@ object PlaylistManage {
         return Triple(listid, gid, ver)
     }
 
-    /** 删除歌单（自建或收藏均可；上游受理后读缓存有延迟）。 */
-    fun delete(listId: String): Boolean {
+    /**
+     * 删除歌单（自建或收藏均可；上游受理后读缓存有延迟）。
+     *
+     * ## N15：为什么 type 必须由调用方传
+     *
+     * 上游契约（playlist.rs `/playlist/del` 分支）：`type=0` 删**自建**歌单、
+     * `type=1` 删**收藏**歌单，传错会被服务端拒绝。此前这里硬编码 `type=1`，
+     * 导致自建歌单（type=0）永远删不掉。
+     *
+     * @param type 歌单来源：0=自建、1=收藏；**缺省 1 保留旧行为兼容**（老调用点不传时仍按收藏删除）。
+     */
+    fun delete(listId: String, type: Int = 1): Boolean {
         if (!AuthStore.isLoggedIn) {
             KugouApi.markNeedsLogin()
             return false
         }
         if (listId.isBlank()) return false
-        val root = KugouApi.getRaw("/playlist/del", mapOf("listid" to listId, "type" to "1")) ?: return false
+        val root = KugouApi.getRaw("/playlist/del", deleteParams(listId, type)) ?: return false
         val ok = JsonLite.asInt(JsonLite.dig(root, "status")) == 1
-        Diag.info(TAG, "删除歌单 listId=$listId 受理=$ok")
+        Diag.info(TAG, "删除歌单 listId=$listId type=$type 受理=$ok")
         return ok
     }
+
+    /**
+     * 删除请求参数组装（纯函数，供 PlaylistManageDeleteParamsTest 锁定 N15 契约）。
+     */
+    internal fun deleteParams(listId: String, type: Int = 1): Map<String, String> =
+        mapOf("listid" to listId, "type" to type.toString())
 
     /**
      * 加歌到歌单。

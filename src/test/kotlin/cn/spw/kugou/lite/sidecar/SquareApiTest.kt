@@ -96,3 +96,34 @@ class PlaylistManageTest {
         assertTrue(gone)
     }
 }
+
+/**
+ * N15（BUG_AUDIT）回归：删除歌单的 `type` 参数必须由调用方按歌单来源传入。
+ *
+ * 根因：此前 `/playlist/del` 硬编码 `type=1`（收藏歌单），自建歌单（`type=0`）
+ * 删除请求被上游拒绝 —— 自建歌单永远删不掉。
+ * 上游契约（playlist.rs /playlist/del 分支）：`type=0` 删自建、`type=1` 删收藏。
+ */
+class PlaylistManageDeleteParamsTest {
+
+    @Test
+    fun `删除自建歌单传type0`() {
+        val params = PlaylistManage.deleteParams("12345", type = 0)
+        assertEquals("12345", params["listid"])
+        assertEquals("0", params["type"])
+    }
+
+    @Test
+    fun `删除收藏歌单传type1`() {
+        val params = PlaylistManage.deleteParams("67890", type = 1)
+        assertEquals("67890", params["listid"])
+        assertEquals("1", params["type"])
+    }
+
+    @Test
+    fun `缺省type保持收藏行为兼容`() {
+        // 保留默认行为：老调用点（未传 type）仍按收藏歌单 type=1 删除。
+        assertEquals("1", PlaylistManage.deleteParams("1", type = 1)["type"])
+        assertEquals("1", PlaylistManage.deleteParams("1")["type"])
+    }
+}

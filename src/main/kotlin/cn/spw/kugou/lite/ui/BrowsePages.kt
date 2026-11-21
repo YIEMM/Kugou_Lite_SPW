@@ -271,7 +271,11 @@ fun PlaylistPage() {
                                                                                         }
                                                                                     }.apply { isDaemon = true }.start()
                                                                                 }
-                                                                            }) { PlaylistManage.delete(id) }
+                                                                            }) {
+                                                                                // N15：删除接口的 type 必须按歌单来源传（0=自建 1=收藏），
+                                                                                // 传错上游直接拒绝 —— 自建歌单此前因此删不掉。
+                                                                                PlaylistManage.delete(id, pl.type)
+                                                                            }
                                                                         }
                                                                         .padding(horizontal = 10.dp, vertical = 8.dp),
                                                                 )
