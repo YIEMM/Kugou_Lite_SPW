@@ -10,7 +10,9 @@ import cn.spw.kugou.lite.sidecar.ApiExec
 import cn.spw.kugou.lite.sidecar.AudioCache
 import cn.spw.kugou.lite.ui.CoverLoader
 import cn.spw.kugou.lite.sidecar.AuthStore
+import cn.spw.kugou.lite.sidecar.CacheQuota
 import cn.spw.kugou.lite.sidecar.DiscoverConfig
+import java.io.File
 import cn.spw.kugou.lite.sidecar.Settings
 import cn.spw.kugou.lite.sidecar.SidecarManager
 import cn.spw.kugou.lite.ui.PageNav
@@ -44,9 +46,17 @@ class KugouLitePlugin(pluginContext: PluginContext) : SpwPlugin(pluginContext) {
         cn.spw.kugou.lite.sidecar.WelfareApi.configure(dir)
         // 关注状态的本地记忆（服务端 user_status 不回落，见裁决 R3）
         cn.spw.kugou.lite.ui.FollowStore.configure(dir)
-            // 音频下载缓存：宿主要用本地文件路径才能可靠播放（见 AudioCache 类文档）
-            AudioCache.configure(dir)
-            CoverLoader.configure(dir)
+            // 音频下载缓存：宿主要用本地文件路径才能可靠播放（见 AudioCache 类文档）。
+            // 缓存根目录可被设置覆盖（用户需求：存储位置灵活变更）；启动时按容量上限 LRU 淘汰。
+            val cacheRoot = Settings.cacheDirOverride.takeIf { it.isNotBlank() }?.let(::File) ?: dir
+            AudioCache.configure(cacheRoot)
+            CoverLoader.configure(cacheRoot)
+            runCatching {
+                val limit = Settings.cacheLimitGb * 1024L * 1024L * 1024L
+                val dropped = CacheQuota.enforce(File(cacheRoot, "audio-cache"), limit) +
+                    CacheQuota.enforce(File(cacheRoot, "cover-cache"), limit)
+                if (dropped.isNotEmpty()) Diag.info("缓存容量 ${Settings.cacheLimitGb}GB：LRU 淘汰 ${dropped.size} 个文件")
+            }.onFailure { Diag.warn("缓存容量检查失败（不影响启动）", it) }
             // 登录态不需要注入给边车：Rust 版是进程内服务，KugouApi 每次请求
             // 都从 AuthStore 读 token 并通过 Cookie 头传给本地服务（见 KugouApi.get）。
             Diag.info("在线能力已就绪：登录=${AuthStore.isLoggedIn}")

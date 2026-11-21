@@ -31,10 +31,19 @@ object AuthStore {
     private const val TAG = "auth"
     private const val FILE_NAME = "auth.properties"
     private const val KEY_TOKEN = "token"
+    private const val KEY_TOKEN_ENC = "tokenEnc"
     private const val KEY_USERID = "userid"
     private const val KEY_NICKNAME = "nickname"
 
     private var file: File? = null
+
+    /**
+     * token 加密器（用户需求 2026-11-21：token 加密存储）。
+     *
+     * token 等同于密码，早期明文落盘。现在经 AES-256-GCM 加密后存 `tokenEnc`，
+     * 旧明文 `token` 键在 load 时自动迁移（读出→加密→重写→删除明文键）。
+     */
+    private var cryptor: TokenCryptor? = null
 
     @Volatile
     var token: String? = null
@@ -50,6 +59,7 @@ object AuthStore {
 
     fun configure(dataDir: File) {
         file = File(dataDir, FILE_NAME)
+        cryptor = TokenCryptor(dataDir)
         load()
     }
 
@@ -64,12 +74,33 @@ object AuthStore {
         try {
             val props = Properties()
             f.inputStream().use { props.load(it) }
-            token = props.getProperty(KEY_TOKEN)?.takeIf { it.isNotBlank() }
             userId = props.getProperty(KEY_USERID)?.takeIf { it.isNotBlank() }
             nickname = props.getProperty(KEY_NICKNAME)
+            // 密文优先；旧明文 token 迁移为密文后删除明文键
+            val encToken = props.getProperty(KEY_TOKEN_ENC)?.takeIf { it.isNotBlank() }
+            token = if (encToken != null) {
+                cryptor?.decrypt(encToken)
+            } else {
+                val plain = props.getProperty(KEY_TOKEN)?.takeIf { it.isNotBlank() }
+                if (plain != null) {
+                    migratePlainToken(f, props, plain)
+                    plain
+                } else null
+            }
             Diag.info(TAG, "已载入登录态：登录=${isLoggedIn} 用户=${nickname ?: userId}")
         } catch (e: Exception) {
             Diag.warn(TAG, "读取登录态失败：${e.message}")
+        }
+    }
+
+    /** 旧明文 token 一次性迁移为密文存储；迁移失败保留明文（下次再试），不影响本次登录态。 */
+    private fun migratePlainToken(f: File, props: Properties, plain: String) {
+        runCatching {
+            val enc = cryptor?.encrypt(plain) ?: return
+            props.remove(KEY_TOKEN)
+            props.setProperty(KEY_TOKEN_ENC, enc)
+            f.outputStream().use { props.store(it, "Kugou Lite login state") }
+            Diag.info(TAG, "登录 token 已从明文迁移为加密存储")
         }
     }
 
@@ -84,13 +115,18 @@ object AuthStore {
         }
         try {
             f.parentFile?.mkdirs()
+            // token 加密存储（用户需求）：AES-256-GCM，密钥在插件私有目录 token.key
+            val enc = cryptor?.encrypt(token) ?: run {
+                Diag.warn(TAG, "token 加密失败，本次登录态不落盘（内存保留）")
+                return
+            }
             val props = Properties().apply {
-                setProperty(KEY_TOKEN, token)
+                setProperty(KEY_TOKEN_ENC, enc)
                 setProperty(KEY_USERID, userId)
                 nickname?.let { setProperty(KEY_NICKNAME, it) }
             }
             f.outputStream().use { props.store(it, "Kugou Lite login state") }
-            Diag.info(TAG, "登录态已保存：用户 ${nickname ?: userId}")
+            Diag.info(TAG, "登录态已保存（token 加密）：用户 ${nickname ?: userId}")
         } catch (e: Exception) {
             Diag.warn(TAG, "保存登录态失败：${e.message}")
         }

@@ -31,6 +31,21 @@ object Settings {
     private const val FILE_NAME = "settings.properties"
 
     private const val KEY_QUALITY = "quality"
+    private const val KEY_CACHE_LIMIT_GB = "cacheLimitGb"
+    private const val KEY_CACHE_DIR_OVERRIDE = "cacheDirOverride"
+
+    /**
+     * 缓存容量上限（GB，用户需求：默认 1 GB）。
+     * 音频缓存与封面缓存共用同一个上限（按目录分别 enforce，配额相同）。
+     */
+    @Volatile
+    var cacheLimitGb: Int = 1
+        private set
+
+    /** 缓存根目录覆盖（空 = 用默认插件数据目录）。变更时 UI 必须提示迁移或删除。 */
+    @Volatile
+    var cacheDirOverride: String = ""
+        private set
 
     /**
      * 可选音质档位。
@@ -71,6 +86,8 @@ object Settings {
             val props = Properties()
             f.inputStream().use { props.load(it) }
             quality = Quality.from(props.getProperty(KEY_QUALITY))
+            cacheLimitGb = props.getProperty(KEY_CACHE_LIMIT_GB)?.toIntOrNull()?.coerceIn(1, 100) ?: 1
+            cacheDirOverride = props.getProperty(KEY_CACHE_DIR_OVERRIDE).orEmpty()
             Diag.info(TAG, "已载入设置：音质=${quality.label}")
         } catch (e: Exception) {
             Diag.warn(TAG, "读取设置失败：${e.message}")
@@ -83,6 +100,24 @@ object Settings {
         Diag.info(TAG, "音质已设为 ${q.label}")
     }
 
+    /** 设置缓存容量上限（GB）；生效需重启（目录配额在 configure 时应用）。 */
+    fun setCacheLimitGb(gb: Int) {
+        cacheLimitGb = gb.coerceIn(1, 100)
+        save()
+        Diag.info(TAG, "缓存上限已设为 $cacheLimitGb GB")
+    }
+
+    /**
+     * 变更缓存根目录。调用前 UI 必须让用户明确选择「迁移」或「删除」：
+     * 迁移用 [StorageMover.move]，删除用 [StorageMover.deleteAll]，两者都在
+     * 变更前对旧目录执行。本方法只记录新位置。
+     */
+    fun setCacheDirOverride(path: String) {
+        cacheDirOverride = path.trim()
+        save()
+        Diag.info(TAG, "缓存目录已变更：${cacheDirOverride.ifBlank { "(默认)" }}")
+    }
+
     private fun save() {
         val f = file ?: run {
             Diag.warn(TAG, "未配置数据目录，设置仅保存在内存")
@@ -92,6 +127,8 @@ object Settings {
             f.parentFile?.mkdirs()
             val props = Properties().apply {
                 setProperty(KEY_QUALITY, quality.value)
+                setProperty(KEY_CACHE_LIMIT_GB, cacheLimitGb.toString())
+                setProperty(KEY_CACHE_DIR_OVERRIDE, cacheDirOverride)
             }
             f.outputStream().use { props.store(it, "Kugou Lite settings") }
         } catch (e: Exception) {
