@@ -415,6 +415,20 @@ private fun SongSection(
     }
 }
 
+/**
+ * N12：解析专辑卡片的导航目标。
+ *
+ * 为什么抽纯函数：组合树无法单测，导航解析（下标越界 / id 为空 → 不导航）
+ * 是点击行为里唯一值得钉住的逻辑；AlbumPickNavigationTest 锁定它。
+ *
+ * @return (albumId, 专辑名)；条目不存在或 albumId 为空返回 null（不导航）。
+ */
+internal fun albumNavigationTarget(albums: List<AlbumBriefState>, index: Int): Pair<String, String>? {
+    val a = albums.getOrNull(index) ?: return null
+    if (a.id.isBlank()) return null
+    return a.id to a.name
+}
+
 /** 专辑类区块：3 张封面。 */
 @Composable
 private fun AlbumSection(
@@ -446,8 +460,17 @@ private fun AlbumSection(
                     albums = all.take(3),
                     allAlbums = all,
                     onMore = { PageNav.openDiscoverDetail(id, title) },
-                    onPick = { _, index ->
-                        Diag.info("[discover] 点击专辑 ${all.getOrNull(index)?.name}")
+                    // N12：点击专辑卡片进专辑详情页（复用 PageNav.openAlbum 路由，
+                    // 与歌手卡 openArtist / 歌单卡 openPlaylist 行为一致）。
+                    // 此前只有 Diag.info 日志 —— 等于点了没反应。
+                    onPick = { list, index ->
+                        val target = albumNavigationTarget(list, index)
+                        if (target != null) {
+                            Diag.info("[discover] 点击专辑 ${target.second} → 专辑页")
+                            PageNav.openAlbum(target.first, target.second)
+                        } else {
+                            Diag.warn("[discover] 点击专辑但无有效 id，不导航")
+                        }
                     },
                 )
             }
