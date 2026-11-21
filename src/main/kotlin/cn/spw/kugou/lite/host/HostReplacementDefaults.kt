@@ -2,78 +2,26 @@ package cn.spw.kugou.lite.host
 
 import cn.spw.kugou.lite.diag.Diag
 import java.lang.reflect.Method
-import kotlin.ranges.IntRange
 
 /**
- * 宿主替换守卫的默认参数掩码兼容层。
+ * 为本插件的替换点准备好默认参数掩码兼容。
  *
- * ## 为什么需要它（真机故障记录）
+ * ## 反混淆策略（R18–R20）
  *
- * 宿主的 `replaceComposable` 引擎内部有一道守卫：**拒绝非零的 Compose 默认参数掩码**。
- * 而宿主导航调用 `ModConfigScreen(route, viewModel = <默认>)` 时，Compose 编译器
- * 追加的 `defaultMask` 是 `2`（第 1 位表示第 1 个业务参数走默认值）。
- * 于是：
- * - `replaceComposable` 注册**成功**（无异常、返回有效 handle）；
- * - 但组合期守卫判定 `mask != 0` 后**直接执行原组件**，我们的 `Content` 永不进入。
+ * 早期把 hooks.site / transformer / 调用点信息类的混淆类名用码位常量写死——
+ * 宿主重新混淆后全部失效。现在全部改为**结构特征匹配**（编译后不变）：
  *
- * 真机现象极具迷惑性：导航确实跳到 `ModConfigContent(cn.spw.kugou.lite)`，
- * 页框、返回按钮、侧栏都正常，**唯独内容仍是宿主原生的「模组管理」**，
- * 插件日志里连一行 `PageHook` 都没有。同位置的 `afterComposable` 探针却能正常触发 ——
- * 因为 after 语义不经过替换守卫。
- *
- * ## 解法
- *
- * 只针对**本插件注册的那一个 site** 做最小手术：把该 site 的「允许的默认参数区间」
- * 临时改成 `IntRange.EMPTY`，并挂上一个自定义 transformer。
- * 不动宿主全局 transformer、不动其它 site、不动任何宿主类定义。
- *
- * 参考实现（spw-netease-plugin `HostReplacementDefaults.kt`）在 1.19.0 上用的就是
- * 这套做法；本插件在 **1.19.3 上已核对混淆名未变**：
- * - site：`com.xuncorp.voxzen.workshop.hooks.ԩ$ԭ`（码位 U+0529 与 U+052D）
- * - transformer：`com.xuncorp.voxzen.workshop.hooks.ԭ`（码位 U+052D）
- *
- * ## 为什么不写字面量转义
- *
- * kapt 会把 Kotlin 文件交给 Java 前端做注解处理，而 Java 在**词法阶段**就把
- * 「反斜杠 + u + 四个十六进制」当转义处理 —— 连注释里的也会，导致
- * `kaptKotlin` 直接报「非法的 Unicode 逃逸」。所以这里一律用 [cp] 拼码位，
- * 源码里绝不出现反斜杠加 u 的组合。
+ * | 旧写死 | 新结构特征 |
+ * |---|---|
+ * | SITE 类名 | registrar 的 Map 值里「有 0 参返回 Method 的方法」的实例（[matches] 已有） |
+ * | prepareSite 类型校验 | 同上结构组合（IntRange 0 参 + IntRange 1 参 + Method 0 参） |
+ * | TRANSFORMER_TYPE | target.method 的 declaringClass（getTransformer 返回的 Method 的声明类） |
+ * | TRANSFORMER_IMPL | priorTransformer 的运行时类（宿主当前挂的 transformer 实例同类） |
+ * | SITE_INFO 类名 | 「候选的 0 参方法返回的对象自身有 0 参返回 Class 的方法」（[matches] 已有） |
  */
 internal object HostReplacementDefaults {
 
     private const val TAG = "replacement"
-
-    /**
-     * 按码位拼出混淆字符。
-     *
-     * **必须声明在所有使用它的属性之前**：Kotlin `object` 的属性按文本顺序初始化，
-     * 但方法本身在任何时候都可调用；放在最前面是为了让阅读顺序与求值顺序一致。
-     */
-    private fun cp(code: Int): String = code.toChar().toString()
-
-    /** hook site 内部类：`hooks.ԩ$ԭ`。 */
-    private val SITE: String =
-        "com.xuncorp.voxzen.workshop.hooks." + cp(0x0529) + "$" + cp(0x052D)
-
-    /**
-     * transformer 的**静态类型**（getter/setter 的签名类型）：`hooks.Ϳ`。
-     *
-     * 真机诊断确认：site 的 `getTransformer` 返回的是基类 `Ϳ`（码位 U+037F），
-     * 而**不是**具体实现类。早期把它写成 `ԭ`（U+052D）导致
-     * `Array contains no element matching the predicate`。
-     */
-    private val TRANSFORMER_TYPE: String = "com.xuncorp.voxzen.workshop.hooks." + cp(0x037F)
-
-    /**
-     * 要实例化的 transformer **实现类**：`hooks.ԭ`。
-     *
-     * 构造参数是 site 实例，用 `getConstructor(site.javaClass)` 取。
-     */
-    private val TRANSFORMER_IMPL: String = "com.xuncorp.voxzen.workshop.hooks." + cp(0x052D)
-
-    /** 调用点信息类：`hooks.Ԫ$Ԩ`。 */
-    private val SITE_INFO: String =
-        "com.xuncorp.voxzen.workshop.hooks." + cp(0x052A) + "$" + cp(0x0528)
 
     /**
      * 为本插件的替换点准备好默认参数掩码兼容。
@@ -85,23 +33,24 @@ internal object HostReplacementDefaults {
      */
     fun prepare(registrar: Any, original: Method, caller: String): AutoCloseable? {
         return runCatching {
-            val siteType = Class.forName(SITE, false, registrar.javaClass.classLoader)
-            val sites = registrar.javaClass.declaredFields
+            // 结构特征（R20）：site 类 = registrar 的 Map 值里「有 0 参返回 Method 的方法」的实例。
+            // 早期用写死的 SITE 类名 isInstance 过滤，宿主重新混淆即失效。
+            val siteCandidates = registrar.javaClass.declaredFields
                 .filter { Map::class.java.isAssignableFrom(it.type) }
                 .flatMap { field ->
                     field.isAccessible = true
                     (field.get(registrar) as? Map<*, *>)?.values?.filterNotNull().orEmpty()
                 }
-                .filter { siteType.isInstance(it) }
+                .filter { hasMethodReturningMethod(it) }
                 .distinct()
 
-            if (sites.isEmpty()) {
+            if (siteCandidates.isEmpty()) {
                 Diag.warn("[$TAG] 未在 registrar 中找到任何 hook site（宿主结构可能已变）")
                 return null
             }
 
-            Diag.info("[$TAG] 候选 hook site 数量=${sites.size}")
-            sites.forEach { candidate ->
+            Diag.info("[$TAG] 候选 hook site 数量=${siteCandidates.size}")
+            siteCandidates.forEach { candidate ->
                 val cls = candidate.javaClass
                 Diag.info(
                     "[$TAG]   候选 " + cls.name +
@@ -109,9 +58,9 @@ internal object HostReplacementDefaults {
                 )
             }
 
-            val site = sites.firstOrNull { candidate -> matches(candidate, original, caller) }
+            val site = siteCandidates.firstOrNull { candidate -> matches(candidate, original, caller) }
             if (site == null) {
-                Diag.warn("[$TAG] 未找到与目标匹配的 hook site（候选 ${sites.size} 个）")
+                Diag.warn("[$TAG] 未找到与目标匹配的 hook site（候选 ${siteCandidates.size} 个）")
                 return null
             }
             prepareSite(site)
@@ -119,6 +68,10 @@ internal object HostReplacementDefaults {
             Diag.warn("[$TAG] 准备默认参数兼容失败：" + (it.message ?: it.javaClass.simpleName))
         }.getOrNull()
     }
+
+    /** 结构特征：对象有「0 参、返回 Method」的方法（site 类的标志）。 */
+    private fun hasMethodReturningMethod(obj: Any): Boolean =
+        obj.javaClass.methods.any { it.parameterCount == 0 && it.returnType == Method::class.java }
 
     /** 判断某个 site 是否就是「替换 original、且 inClass 为 caller」那一个。 */
     private fun matches(candidate: Any, original: Method, caller: String): Boolean {
@@ -137,14 +90,18 @@ internal object HostReplacementDefaults {
                 return false
             }
 
-            val infoTypeName = SITE_INFO
+            // SITE_INFO 结构特征（R20）：候选的 0 参方法返回的对象，自身有「0 参返回 Class」的方法。
+            // 早期写死 SITE_INFO 类名做返回类型比对，混淆即失效。
             val infoMethod = cls.declaredMethods
-                .firstOrNull { it.parameterCount == 0 && it.returnType.name == infoTypeName }
+                .map { it to runCatching { it.invoke(candidate) }.getOrNull() }
+                .firstOrNull { (m, result) ->
+                    m.parameterCount == 0 && result != null && hasMethodReturningClass(result)
+                }
             if (infoMethod == null) {
-                Diag.warn("[$TAG] 候选 ${cls.name} 无 0 参且返回 $infoTypeName 的方法")
+                Diag.warn("[$TAG] 候选 ${cls.name} 无调用点信息方法（结构特征不匹配）")
                 return false
             }
-            val info = infoMethod.invoke(candidate)
+            val info = infoMethod.second!!
             val inClassMethod = info.javaClass.declaredMethods
                 .firstOrNull { it.returnType == Class::class.java && it.parameterCount == 0 }
             if (inClassMethod == null) {
@@ -159,38 +116,50 @@ internal object HostReplacementDefaults {
         }.getOrDefault(false)
     }
 
+    /** 结构特征：对象有「0 参、返回 Class」的方法。 */
+    private fun hasMethodReturningClass(obj: Any): Boolean =
+        obj.javaClass.declaredMethods.any { it.parameterCount == 0 && it.returnType == Class::class.java }
+
     /** 对单个 site 做最小手术：清空允许区间 + 换 transformer。 */
     private fun prepareSite(site: Any): AutoCloseable {
         val type = site.javaClass
-        check(type.name == SITE) { "Unsupported UI hook site: " + type.name }
-
+        // 结构校验（R20）替代写死的 SITE 类名比对：site 必须同时具备
+        // 「0 参返回 IntRange」「1 参收 IntRange」「0 参返回 Method」三个方法（读/写/目标）。
         val methods = type.declaredMethods
-        val read = methods.single { it.returnType == IntRange::class.java && it.parameterCount == 0 }
-        val write = methods.single { it.parameterTypes.toList() == listOf(IntRange::class.java) }
+        val read = methods.singleOrNull { it.returnType == IntRange::class.java && it.parameterCount == 0 }
+            ?: throw IllegalStateException("Unsupported UI hook site（无 IntRange 0 参方法）: " + type.name)
+        val write = methods.singleOrNull { it.parameterTypes.toList() == listOf(IntRange::class.java) }
+            ?: throw IllegalStateException("Unsupported UI hook site（无 IntRange 1 参方法）: " + type.name)
 
         val target = type.methods
-            .single { it.parameterCount == 0 && it.returnType == Method::class.java }
-            .invoke(site) as Method
+            .singleOrNull { it.parameterCount == 0 && it.returnType == Method::class.java }
+            ?.invoke(site) as? Method
+            ?: throw IllegalStateException("Unsupported UI hook site（无 0 参返回 Method）: " + type.name)
         val expected = target.parameterCount - 1
         val current = read.invoke(site) as IntRange
         check(current == (expected..expected)) {
             "Unexpected Compose default-mask layout: " + current + " vs " + expected
         }
 
-        val getTransformer = methods.single {
-            it.parameterCount == 0 && it.returnType.name == TRANSFORMER_TYPE
-        }
-        val setTransformer = methods.single {
-            it.parameterCount == 1 && it.parameterTypes[0].name == TRANSFORMER_TYPE
-        }
+        // TRANSFORMER_TYPE（R20）：getTransformer 返回的 Method 的**声明类**就是 transformer 基类——
+        // 早期写死其混淆名（基类 U+037F），宿主重新混淆即失效。
+        val getTransformer = methods.singleOrNull {
+            it.parameterCount == 0 && it.returnType == target.declaringClass
+        } ?: throw IllegalStateException("site 无返回 transformer 基类的方法: " + type.name)
+        val setTransformer = methods.singleOrNull {
+            it.parameterCount == 1 && it.parameterTypes[0] == target.declaringClass
+        } ?: throw IllegalStateException("site 无收 transformer 基类的 setter: " + type.name)
 
         val priorRange = current
         val priorTransformer = getTransformer.invoke(site)
 
         try {
             write.invoke(site, IntRange.EMPTY)
-            val transformerType = Class.forName(TRANSFORMER_IMPL, true, type.classLoader)
-            val transformer = transformerType.getConstructor(type).newInstance(site)
+            // TRANSFORMER_IMPL（R20）：宿主当前挂着的 transformer 实例的运行时类就是实现类——
+            // 同一个宿主版本里只有一种实现，直接取同类构造新实例，无需写死类名。
+            val implClass = priorTransformer?.javaClass
+                ?: throw IllegalStateException("site 当前无 transformer 实例可参照: " + type.name)
+            val transformer = implClass.getConstructor(type).newInstance(site)
             setTransformer.invoke(site, transformer)
             Diag.info("[$TAG] 已放开默认参数掩码（原区间=$priorRange，允许区间=空）")
             return AutoCloseable {

@@ -94,43 +94,61 @@ internal object HostSalt {
     private const val ANY = "?"
 
     // ------------------------------------------------------------------
-    // 混淆类名：来自 resolve_markers.py 对宿主 JAR 的 LDC 源码标记扫描，
-    // 原始名写在各条注释里。任一取不到即视为宿主版本不受支持。
+    // 混淆类名：不再写死码点（R18）——改为按 LDC 源码标记的原始全名经
+    // [ObfClassResolver] 动态反查（R19/R20），结果由 resolver 缓存（R21）。
+    // 原始全名 = 宿主编译期保留的源码标记，跨版本稳定；解析失败抛可读异常
+    // 由 validate/isAvailable 降级（R22）。原始名依据保留在注释里。
     // ------------------------------------------------------------------
 
-    /** SaltUI `Text`：`com.moriafly.salt.ui.Text.Text`，`Text.kt:101`（U+0622）。 */
-    private val TEXT_CLASS = "androidx.compose.ui." + cp(0x0622)
+    /** SaltUI `Text`：`com.moriafly.salt.ui.Text.Text`，`Text.kt:101`。 */
+    private val TEXT_CLASS: String get() = obf("com.moriafly.salt.ui.Text.Text", "Text", "androidx.compose.ui.")
 
-    /** SaltUI `Card`：`com.moriafly.salt.ui.Card.Card`，`Card.kt:57`（U+1080）。 */
-    private val CARD_CLASS = "androidx.compose.ui." + cp(0x1080)
+    /** SaltUI `Card`：`com.moriafly.salt.ui.Card.Card`，`Card.kt:57`。 */
+    private val CARD_CLASS: String get() = obf("com.moriafly.salt.ui.Card.Card", "Card", "androidx.compose.ui.")
 
-    /** SaltUI `Item`：`com.moriafly.salt.ui.Item.Item`，`Item.kt:209`（U+0824）。 */
-    private val ITEM_CLASS = "androidx.compose.ui." + cp(0x0824)
+    /** SaltUI `Item`：`com.moriafly.salt.ui.Item.Item`，`Item.kt:209`。 */
+    private val ITEM_CLASS: String get() = obf("com.moriafly.salt.ui.Item.Item", "Item", "androidx.compose.ui.")
 
-    /** SaltUI `ItemOuterTitle`：`com.moriafly.salt.ui.ItemOuterTitle`，`ItemOuter.kt:44`（U+02BD）。 */
-    private val OUTER_CLASS = "androidx.compose.ui." + cp(0x02BD)
+    /** SaltUI `ItemOuterTitle`：`com.moriafly.salt.ui.ItemOuterTitle`，`ItemOuter.kt:44`。 */
+    private val OUTER_CLASS: String get() = obf("com.moriafly.salt.ui.ItemOuterTitle.ItemOuterTitle", "ItemOuterTitle", "androidx.compose.ui.")
 
     /**
-     * 宿主二级页面外框 `com.xuncorp.voxzen.ui.screen.BasicScreenColumn`（`BasicScreen.kt:83`），
-     * 混淆名 U+0E16。宿主自己的 34 个页面（含 `ModConfigScreen`）都用它。
+     * 宿主二级页面外框 `com.xuncorp.voxzen.ui.screen.BasicScreenColumn`（`BasicScreen.kt:83`）。
+     * 宿主自己的 34 个页面（含 `ModConfigScreen`）都用它。
      *
      * 该类里有 `Function3` / `Function4` 两个公有重载，**只有 `Function3` 那条路径带
      * 滚动容器**，见下方 [screen] 的说明。
      */
-    private val SCREEN_CLASS = "androidx.compose.ui." + cp(0x0E16)
+    private val SCREEN_CLASS: String get() = obf("com.xuncorp.voxzen.ui.screen.BasicScreenColumn.BasicScreenColumn", "BasicScreenColumn", "androidx.compose.ui.")
 
-    /** 宿主 `BasicCaptionButton`：`com.xuncorp.voxzen.ui.component.BasicCaptionButton`（U+0529）。 */
-    private val CAPTION_CLASS = "com.xuncorp.voxzen.ui.component." + cp(0x0529)
+    /** 宿主 `BasicCaptionButton`：`com.xuncorp.voxzen.ui.component.BasicCaptionButton`。 */
+    private val CAPTION_CLASS: String get() = obf("com.xuncorp.voxzen.ui.component.BasicCaptionButton.BasicCaptionButton", "BasicCaptionButton", "com.xuncorp.voxzen.ui.component.")
 
     /**
      * 宿主二级页左上角的返回按钮 `com.xuncorp.voxzen.ui.screen.BasicScreenBackButton`
-     * （`BasicScreenBackButton.desktop.kt:5`），混淆名 U+015F。
+     * （`BasicScreenBackButton.desktop.kt:5`）。
      *
      * javap 实测签名 `(Function0 onClick, Composer, int changed)` —— 无 Modifier、
      * 无 enabled，是一个纯粹的图标按钮。宿主 `BasicScreen` 的 `onBack` 槽位要的就是
      * 它的 composable 实例（`Function2<Composer, Integer, Unit>`）。
      */
-    private val BACK_CLASS = "androidx.compose.ui." + cp(0x015F)
+    private val BACK_CLASS: String get() = obf("com.xuncorp.voxzen.ui.screen.BasicScreenBackButton.BackButton", "BackButton", "androidx.compose.ui.")
+
+    /**
+     * 动态反查混淆类名。Decls 扫描记录的 obfClass 是完整二进制类名（含 R8 重排后的包路径），
+     * 直接使用。原始全名的**短名部分**必须与 functionName 一致（防同名类误配）。
+     * [packagePrefix] 仅用于日志对照（R8 重排包路径是稳定行为但版本间可能调整，
+     * 不做硬校验，避免把「包路径正常漂移」误判成失败）。
+     * 解析失败抛 IllegalStateException，由 validate/isAvailable 捕获降级（R22）。
+     */
+    private fun obf(originalFullName: String, functionName: String, packagePrefix: String): String {
+        val resolved = ObfClassResolver.resolve(HostTargets.index(HostTargets::class.java), originalFullName, functionName)
+            ?: throw IllegalStateException("混淆类名解析失败：$originalFullName（宿主版本可能已变更）")
+        if (!resolved.startsWith(packagePrefix)) {
+            Diag.warn("[$TAG] 解析出的类 $resolved 不在预期包 $packagePrefix 下（R8 包路径漂移，继续使用）")
+        }
+        return resolved
+    }
 
     // ------------------------------------------------------------------
     // 组件句柄。lazy：只有真正用到才解析，解析失败抛出可读异常。
