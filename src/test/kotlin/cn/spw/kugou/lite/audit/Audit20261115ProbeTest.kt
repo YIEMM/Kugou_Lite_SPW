@@ -193,9 +193,10 @@ class Audit20261115ProbeTest {
         assertTrue(AudioCache.writeLrcSidecar(audio, short))
         val second = lrc.lastModified()
 
-        // 期望：内容没变就不重写；实际：长度 <= 100 一律重写
-        assertTrue(second > first, "短歌词被重复写入了")
-        assertFalse(AudioCache.hasFreshLyrics(audio), "短歌词永远不被当成「新鲜」")
+        // N06 已修复：内容没变（同版本戳）就不重写；短歌词也算新鲜。
+        // 这里从「锁定缺陷」的探针断言翻转为「锁定修复」的回归断言。
+        assertEquals(second, first, "短歌词（同版本戳）不应被重复写入")
+        assertTrue(AudioCache.hasFreshLyrics(audio), "带版本戳的短歌词应当算新鲜")
     }
 
     // ------------------------------------------ P06 损坏缓存被当成有效缓存

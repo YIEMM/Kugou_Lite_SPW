@@ -317,10 +317,16 @@ object AudioCache {
      *
      * 供缓存命中路径判断「还需不需要去接口补歌词」——已有新鲜歌词就跳过，
      * 避免每次切歌都为同一首歌发一次歌词请求。
+     *
+     * 新鲜的判据**只有版本戳**（[needsLrcRewrite]），不看长度。
+     * 早期这里写 `length() <= 100`：纯音乐/短句/日文短歌的正常歌词
+     * 不足 100 字节，被判成「永远不新鲜」——每次缓存命中都重取一次
+     * 歌词接口并重写文件（N06）。空文件/半截文件读出来没有版本戳，
+     * 自然判需要重写，不需要长度这个启发式。
      */
     fun hasFreshLyrics(audioFile: File): Boolean {
         val lrc = File(audioFile.parentFile, audioFile.nameWithoutExtension + ".lrc")
-        if (!lrc.isFile || lrc.length() <= 100) return false
+        if (!lrc.isFile) return false
         return runCatching {
             !needsLrcRewrite(lrc.readText(Charsets.UTF_8))
         }.getOrDefault(false)
@@ -485,7 +491,10 @@ object AudioCache {
             // 早期代码不会提取 [language:] 译文，写出的 .lrc 只有原文，
             // 而「非空就跳过」让它们永远不会被新代码覆盖 —— 这就是
             // 用户反馈「有些歌词没有翻译」的根因。
-            if (lrc.isFile && lrc.length() > 100 && !needsLrcRewrite(lrc.readText(Charsets.UTF_8))) {
+            // 注意判据里曾带 `length() > 100`：短歌词（<100 字节）每次
+            // 都被当作不存在而重写（N06）。版本戳已经足够区分新旧，
+            // 长度这个启发式只会误伤正常短歌词。
+            if (lrc.isFile && !needsLrcRewrite(lrc.readText(Charsets.UTF_8))) {
                 return true
             }
 

@@ -156,11 +156,14 @@ object TrackWatcher {
     fun dropFromQueue(dead: List<Song>): List<Song> {
         if (dead.isEmpty() || queueList.isEmpty()) return queueList
         val deadIds = dead.map { trackIdOf(it) }.toHashSet()
+        val before = queueList.size
         val remaining = queueList.filter { trackIdOf(it) !in deadIds }
-        if (remaining.size == queueList.size) return queueList
+        if (remaining.size == before) return queueList
         queueList = remaining
         queueMap = queueMap - deadIds
-        Diag.info(TAG, "队列登记已剔除 ${queueList.size} / ${remaining.size} 首")
+        // N16：日志必须在赋值**前**用捕获的 before 拼出来，否则两侧打印
+        // 同一个数（queueList 已是 remaining），看不出剔除了多少。
+        Diag.info(TAG, dropRemovedMessage(before, remaining.size))
         return remaining
     }
 
@@ -556,3 +559,12 @@ object TrackWatcher {
     private fun trackIdOf(song: Song): String =
         "$ID_PREFIX${song.hash.ifBlank { song.albumAudioId }}"
 }
+
+/**
+ * 队列剔除日志文案（N16，抽出便于单测）。
+ *
+ * 早期打印的是 `已剔除 ${queueList.size} / ${remaining.size}`，但打印前
+ * 已经执行了 `queueList = remaining`，两个数永远相同——日志失去信息量。
+ */
+internal fun dropRemovedMessage(before: Int, after: Int): String =
+    "队列登记剔除 ${before - after} 首（$before → $after）"
