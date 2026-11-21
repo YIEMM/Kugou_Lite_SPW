@@ -1,0 +1,31 @@
+# 行尾统一策略（2026-11-21）：仓库文本统一 LF，避免 CRLF/LF 混用造成假 diff。
+# Windows 专属脚本保留 CRLF（部分工具对 LF 敏感）；vendor/ 第三方代码不改动。
+
+* text=auto eol=lf
+
+# Windows 专属脚本保留 CRLF
+*.bat text eol=crlf
+*.ps1 text eol=crlf
+*.cmd text eol=crlf
+
+# Windows 批处理原样
+gradlew.bat text eol=crlf
+
+# 二进制文件不做任何转换
+*.jar binary
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.dll binary
+*.exe binary
+*.aot binary
+*.spmod binary
+*.mp3 binary
+*.flac binary
+*.m4a binary
+*.ogg binary
+
+# vendor 第三方代码保持原样（不参与行尾归一化）
+sidecar/rust/vendor/** -text
