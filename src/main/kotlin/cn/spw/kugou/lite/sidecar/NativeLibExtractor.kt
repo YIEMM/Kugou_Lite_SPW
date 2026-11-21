@@ -51,8 +51,13 @@ internal object NativeLibExtractor {
             return target
         }
 
-        target.writeBytes(bytes)
-        stamp.writeText(digest)
+        // N24：写入必须原子（.part + rename），见 [atomicWriteBytes] / [atomicWriteText]。
+        // 旧实现直接 writeBytes + writeText：进程在中间被杀会留下
+        // 「旧 stamp + 半截新 dll」——下次启动指纹匹配直接跳过重写，
+        // System.load 加载截断的 dll 会崩溃。
+        // stamp 最后写：stamp 与 dll 不配套时指纹不匹配，下次启动会重写而不是跳过。
+        atomicWriteBytes(target, bytes)
+        atomicWriteText(stamp, digest)
         Diag.info(TAG, "已解压 $name（${bytes.size} 字节，sha256=${digest.take(12)}…）")
         return target
     }
@@ -84,6 +89,61 @@ internal object NativeLibExtractor {
 
     private fun readResource(name: String): ByteArray? =
         NativeLibExtractor::class.java.classLoader?.getResourceAsStream("native/$name")?.use { it.readBytes() }
+
+    /**
+     * 字节原子写（N24）：先写 `<name>.part` 再 rename 到目标。
+     *
+     * 为什么不能直接 `writeBytes`：它先截断为 0 再逐块写，进程在中间被杀
+     * 就留下半截文件；而指纹 stamp 后写，会出现「旧 stamp + 半截新 dll」，
+     * 下次启动指纹匹配 → 跳过重写 → `System.load` 加载截断 dll 直接崩溃。
+     * rename 在同一目录内原子生效：读者要么看到完整的旧文件，要么完整的新文件，
+     * 半截内容只存在于 .part。rename 不能覆盖已存在文件时先删目标再改名
+     * （与 AudioCache.atomicWriteText 同模式），仍失败则抛出并清理 .part。
+     * internal 供单测直测。
+     */
+    /** 同一把锁串行化所有原子写：并发写同一目标时后写完整覆盖前写，杜绝删除窗口。 */
+    private val writeLock = Any()
+
+    internal fun atomicWriteBytes(target: File, bytes: ByteArray) {
+        synchronized(writeLock) {
+            val part = File(target.parentFile, target.name + ".part")
+            try {
+                part.writeBytes(bytes)
+                if (!part.renameTo(target)) {
+                    // 某些环境 rename 不能覆盖已存在文件：先删再改名（与 AudioCache 同模式）
+                    target.delete()
+                    if (!part.renameTo(target)) {
+                        throw IllegalStateException("rename 失败：${part.name} -> ${target.name}")
+                    }
+                }
+            } catch (t: Throwable) {
+                runCatching { part.delete() }
+                throw t
+            }
+        }
+    }
+
+    /**
+     * 文本原子写（N24）：同 [atomicWriteBytes]，用于 sha256 指纹等小文件，
+     * 避免半截指纹恰好被读出当成有效值。internal 供单测直测。
+     */
+    internal fun atomicWriteText(target: File, text: String) {
+        synchronized(writeLock) {
+            val part = File(target.parentFile, target.name + ".part")
+            try {
+                part.writeText(text, Charsets.UTF_8)
+                if (!part.renameTo(target)) {
+                    target.delete()
+                    if (!part.renameTo(target)) {
+                        throw IllegalStateException("rename 失败：${part.name} -> ${target.name}")
+                    }
+                }
+            } catch (t: Throwable) {
+                runCatching { part.delete() }
+                throw t
+            }
+        }
+    }
 
     private fun sha256(bytes: ByteArray): String =
         MessageDigest.getInstance("SHA-256").digest(bytes).joinToString("") { String.format(Locale.ROOT, "%02x", it) }

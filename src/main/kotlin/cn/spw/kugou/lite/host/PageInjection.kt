@@ -88,8 +88,19 @@ object PageInjection {
     private const val TITLE_ANCHOR_CLASS = "com.xuncorp.voxzen.ui.main.titlebar.DebugCaptionButton"
     private const val TITLE_ANCHOR_FUNCTION = "DebugCaptionButton"
 
+    // BUG-32 / N24：install 与 uninstall 用同一把锁互斥（installAsync 线程与
+    // 插件 stop() 可并发，旧实现幂等守卫无锁，可能双重注册 hook 或边装边卸）；
+    // 句柄字段加 @Volatile —— pageHandle 曾是非 volatile，安装线程的写入对
+    // 组合期线程没有可见性保证。
+    private val guard = InstallGuard(onSkip = { Diag.info("[$TAG] 已安装，跳过") })
+
+    @Volatile
     private var pageHandle: HookHandle? = null
+
+    @Volatile
     private var titleHandle: HookHandle? = null
+
+    @Volatile
     private var defaultsCompat: AutoCloseable? = null
 
     /** 上一次 PageHook 的归属判定，用于避免逐帧写日志。 */
@@ -120,10 +131,15 @@ object PageInjection {
      * （没有入口就没有打开方式，但页面本身仍然可用）。
      */
     fun install(): Boolean {
-        if (pageHandle != null) {
-            Diag.info("[$TAG] 已安装，跳过")
-            return true
-        }
+        // N24 / BUG-32：安装与卸载由 [InstallGuard] 同一把锁互斥（installAsync 线程
+        // 与插件 stop() 可并发，旧实现幂等守卫无锁，可能双重注册 hook 或边装边卸）。
+        // 「已安装快速返回 true」的幂等语义保留，守卫判定在锁内，并发 install 只有一个
+        // 真正执行注册；安装中途失败的回滚（uninstall）重入同一把 monitor，可重入不自锁。
+        return guard.install { installLocked() }
+    }
+
+    /** 前置：调用方必须已持有守卫锁（[InstallGuard] 保证）。 */
+    private fun installLocked(): Boolean {
         return runCatching {
             val idx = HostTargets.index(WorkshopApi::class.java)
 
@@ -232,8 +248,13 @@ object PageInjection {
     }.onFailure { Diag.warn("[$TAG] 原方法句柄获取失败：" + (it.message ?: it.javaClass.simpleName)) }
         .getOrNull()
 
-    /** 卸载。**幂等**。 */
+    /** 卸载。**幂等**。与 [install] 同锁互斥（N24 / BUG-32）。 */
     fun uninstall() {
+        guard.uninstall { uninstallLocked() }
+    }
+
+    /** 前置：调用方必须已持有守卫锁（[InstallGuard] 保证）。 */
+    private fun uninstallLocked() {
         runCatching { SidebarInjection.uninstall() }.onFailure { Diag.error("[$TAG] 侧栏卸载异常", it) }
         runCatching { NavigatorBridge.uninstall() }.onFailure { Diag.error("[$TAG] 导航桥卸载异常", it) }
         runCatching { pageHandle?.unhook() }.onFailure { Diag.error("[$TAG] 页面卸载异常", it) }
@@ -355,3 +376,47 @@ object PageInjection {
     }
 }
 
+/**
+ * 安装守卫（BUG-32 / N24）：安装与卸载的互斥与幂等。
+ *
+ * ## 为什么单独提一个类
+ *
+ * [PageInjection] 的 install 依赖宿主 WorkshopApi（compileOnly，单测运行期不在
+ * classpath），并发行为无法直接单测。把「互斥 + 已安装快速返回 + 幂等卸载」
+ * 这段纯并发语义抽成无宿主依赖的 [InstallGuard]，真实安装逻辑作为动作传入，
+ * 并发测试直接打在守卫上。
+ *
+ * ## 语义
+ *
+ * - [install][InstallGuard.install]：已安装时**不执行动作**快速返回 true；
+ *   否则在锁内执行动作，以其返回值决定是否置位。并发 install 只有一个真正执行。
+ * - [uninstall][InstallGuard.uninstall]：与 install 互斥，动作总是执行（卸载本身
+ *   幂等，句柄为 null 时 unhook 是空操作），执行后清位 —— 与旧行为一致（未安装也走一遍清理）。
+ * - 锁是对象 monitor，可重入：install 动作中途失败回调 uninstall 不会自锁。
+ */
+internal class InstallGuard(private val onSkip: () -> Unit = {}) {
+
+    private val lock = Any()
+
+    @Volatile
+    private var installed = false
+
+    /** 已安装快速返回 true（不执行动作）；否则锁内执行 [action]，以其返回值决定是否置位。 */
+    fun install(action: () -> Boolean): Boolean {
+        synchronized(lock) {
+            if (installed) {
+                onSkip()
+                return true
+            }
+            return action().also { installed = it }
+        }
+    }
+
+    /** 与 [install][InstallGuard.install] 互斥；[action] 总是执行（幂等卸载），执行后清位。 */
+    fun uninstall(action: () -> Unit) {
+        synchronized(lock) {
+            action()
+            installed = false
+        }
+    }
+}
