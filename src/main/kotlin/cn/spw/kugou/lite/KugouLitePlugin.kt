@@ -51,12 +51,15 @@ class KugouLitePlugin(pluginContext: PluginContext) : SpwPlugin(pluginContext) {
             val cacheRoot = Settings.cacheDirOverride.takeIf { it.isNotBlank() }?.let(::File) ?: dir
             AudioCache.configure(cacheRoot)
             CoverLoader.configure(cacheRoot)
+            // 封面限流配额应用设置值（用户需求：限流参数可在设置中调整）
+            cn.spw.kugou.lite.ui.CoverRateLimiter.DEFAULT.visiblePerSecond = Settings.coverRateVisible
+            cn.spw.kugou.lite.ui.CoverRateLimiter.DEFAULT.invisiblePerSecond = Settings.coverRateInvisible
             runCatching {
                 val limit = Settings.cacheLimitGb * 1024L * 1024L * 1024L
                 val dropped = CacheQuota.enforce(File(cacheRoot, "audio-cache"), limit) +
                     CacheQuota.enforce(File(cacheRoot, "cover-cache"), limit)
                 if (dropped.isNotEmpty()) Diag.info("缓存容量 ${Settings.cacheLimitGb}GB：LRU 淘汰 ${dropped.size} 个文件")
-            }.onFailure { Diag.warn("缓存容量检查失败（不影响启动）", it) }
+            }.onFailure { Diag.warn("缓存容量检查失败（不影响启动）：${it.message}") }
             // 登录态不需要注入给边车：Rust 版是进程内服务，KugouApi 每次请求
             // 都从 AuthStore 读 token 并通过 Cookie 头传给本地服务（见 KugouApi.get）。
             Diag.info("在线能力已就绪：登录=${AuthStore.isLoggedIn}")

@@ -13,8 +13,8 @@ import java.util.ArrayDeque
  * 实例化使用（可注入时钟便于测试）；全局单例见 [Companion.DEFAULT]。
  */
 class CoverRateLimiter(
-    private val visiblePerSecond: Int = 6,
-    private val invisiblePerSecond: Int = 2,
+    @Volatile var visiblePerSecond: Int = 6,
+    @Volatile var invisiblePerSecond: Int = 2,
     private val windowMs: Long = 1_000L,
     @Volatile private var now: () -> Long = { System.currentTimeMillis() },
 ) {

@@ -238,6 +238,9 @@ fun DiscoverPage() {
                                         newSongs = newSongs.value,
                                         newAlbums = newAlbums.value,
                                         onRetry = { reloadTick++ },
+                                        onRefreshDiscover = {
+                                            discover.load { runCatching { DiscoverApi.homeDiscover() }.getOrDefault(emptyList()) }
+                                        },
                                     )
                                 }
                             }
@@ -354,10 +357,12 @@ private fun SectionContent(
     newSongs: Async<List<Song>>,
     newAlbums: Async<List<AlbumBriefState>>,
     onRetry: () -> Unit,
+    /** 刷歌推荐的手动刷新（换一批）；其它区块为 null。 */
+    onRefreshDiscover: () -> Unit = {},
 ) {
     when (id) {
         "daily" -> SongSection("每日推荐", id, daily, onRetry)
-        "discover" -> SongSection("刷歌推荐", id, discover, onRetry)
+        "discover" -> SongSection("刷歌推荐", id, discover, onRetry, onRefresh = onRefreshDiscover)
         "newSongs" -> SongSection("新歌速递", id, newSongs, onRetry)
         "newAlbums" -> AlbumSection("新碟上架", id, newAlbums, onRetry)
     }
@@ -370,6 +375,8 @@ private fun SongSection(
     id: String,
     state: Async<List<Song>>,
     onRetry: () -> Unit,
+    /** 非空时成功态标题栏显示「换一批」。 */
+    onRefresh: (() -> Unit)? = null,
 ) {
     when (val s = state) {
         is Async.Idle, is Async.Loading -> {
@@ -401,6 +408,7 @@ private fun SongSection(
                         else PageNav.openDiscoverDetail(id, title)
                     },
                     onPick = { list, index -> playSongsFromQueue(list, index) },
+                    onRefresh = onRefresh,
                 )
             }
         }

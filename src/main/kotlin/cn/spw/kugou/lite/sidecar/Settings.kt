@@ -33,6 +33,20 @@ object Settings {
     private const val KEY_QUALITY = "quality"
     private const val KEY_CACHE_LIMIT_GB = "cacheLimitGb"
     private const val KEY_CACHE_DIR_OVERRIDE = "cacheDirOverride"
+    private const val KEY_COVER_RATE_VISIBLE = "coverRateVisible"
+    private const val KEY_COVER_RATE_INVISIBLE = "coverRateInvisible"
+
+    /**
+     * 封面请求限流（次/秒，用户需求 2026-11-21：视图内 5~8、视图外 2）。
+     * 视图内默认 6（范围中段），可在设置页调整；视图外固定 2 也开放调整。
+     */
+    @Volatile
+    var coverRateVisible: Int = 6
+        private set
+
+    @Volatile
+    var coverRateInvisible: Int = 2
+        private set
 
     /**
      * 缓存容量上限（GB，用户需求：默认 1 GB）。
@@ -88,6 +102,8 @@ object Settings {
             quality = Quality.from(props.getProperty(KEY_QUALITY))
             cacheLimitGb = props.getProperty(KEY_CACHE_LIMIT_GB)?.toIntOrNull()?.coerceIn(1, 100) ?: 1
             cacheDirOverride = props.getProperty(KEY_CACHE_DIR_OVERRIDE).orEmpty()
+            coverRateVisible = props.getProperty(KEY_COVER_RATE_VISIBLE)?.toIntOrNull()?.coerceIn(1, 20) ?: 6
+            coverRateInvisible = props.getProperty(KEY_COVER_RATE_INVISIBLE)?.toIntOrNull()?.coerceIn(1, 20) ?: 2
             Diag.info(TAG, "已载入设置：音质=${quality.label}")
         } catch (e: Exception) {
             Diag.warn(TAG, "读取设置失败：${e.message}")
@@ -118,6 +134,14 @@ object Settings {
         Diag.info(TAG, "缓存目录已变更：${cacheDirOverride.ifBlank { "(默认)" }}")
     }
 
+    /** 设置封面限流（次/秒）；立即生效（CoverRateLimiter.DEFAULT 引用可变字段）。 */
+    fun setCoverRate(visible: Int, invisible: Int) {
+        coverRateVisible = visible.coerceIn(1, 20)
+        coverRateInvisible = invisible.coerceIn(1, 20)
+        save()
+        Diag.info(TAG, "封面限流已设为 $coverRateVisible/$coverRateInvisible 每秒")
+    }
+
     private fun save() {
         val f = file ?: run {
             Diag.warn(TAG, "未配置数据目录，设置仅保存在内存")
@@ -129,6 +153,8 @@ object Settings {
                 setProperty(KEY_QUALITY, quality.value)
                 setProperty(KEY_CACHE_LIMIT_GB, cacheLimitGb.toString())
                 setProperty(KEY_CACHE_DIR_OVERRIDE, cacheDirOverride)
+                setProperty(KEY_COVER_RATE_VISIBLE, coverRateVisible.toString())
+                setProperty(KEY_COVER_RATE_INVISIBLE, coverRateInvisible.toString())
             }
             f.outputStream().use { props.store(it, "Kugou Lite settings") }
         } catch (e: Exception) {

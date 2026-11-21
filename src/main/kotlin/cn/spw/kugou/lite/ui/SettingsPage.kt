@@ -48,6 +48,7 @@ fun SettingsPage() {
     var quality by remember { mutableStateOf(Settings.quality) }
     var cacheText by remember { mutableStateOf("计算中…") }
     var limitText by remember { mutableStateOf<String?>(null) }
+    var rateText by remember { mutableStateOf<String?>(null) }
     var moveText by remember { mutableStateOf<String?>(null) }
 
     // 首次进入时算一次缓存占用（可能较慢，放后台）
@@ -152,6 +153,31 @@ fun SettingsPage() {
                     }
                 }
                 limitText?.let {
+                    Text3(it, color = KugouTheme.colors.faint, modifier = Modifier.padding(top = 6.dp))
+                }
+                // 封面请求限流（用户需求：可在设置中调整）
+                Text3(
+                    "封面限流：视图内 " + Settings.coverRateVisible + " / 视图外 " + Settings.coverRateInvisible + " 每秒",
+                    color = KugouTheme.colors.text,
+                    modifier = Modifier.padding(top = 12.dp),
+                )
+                Row(Modifier.fillMaxWidth().padding(top = 8.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    listOf(4, 6, 8).forEach { v ->
+                        Text3(
+                            "视图内 " + v,
+                            color = if (Settings.coverRateVisible == v) KugouTheme.colors.accent else KugouTheme.colors.faint,
+                            modifier = Modifier
+                                .clip(androidx.compose.foundation.shape.RoundedCornerShape(8.dp))
+                                .clickable {
+                                    Settings.setCoverRate(v, Settings.coverRateInvisible)
+                                    rateText = "已设为 视图内 " + v + " / 视图外 " + Settings.coverRateInvisible
+                                }
+                                .padding(horizontal = 10.dp, vertical = 6.dp),
+                        )
+                    }
+                    Text3("视图外固定 2", color = KugouTheme.colors.faint, modifier = Modifier.padding(vertical = 6.dp))
+                }
+                rateText?.let {
                     Text3(it, color = KugouTheme.colors.faint, modifier = Modifier.padding(top = 6.dp))
                 }
                 Text3(

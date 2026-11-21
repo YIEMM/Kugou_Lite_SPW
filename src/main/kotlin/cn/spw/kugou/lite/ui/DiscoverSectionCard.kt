@@ -43,10 +43,12 @@ fun DiscoverSectionCard(
     onMore: () -> Unit,
     onPick: (List<Song>, Int) -> Unit,
     modifier: Modifier = Modifier,
+    /** 非空时标题栏显示「换一批」：手动刷新（用户需求——刷歌推荐无法手动刷新）。 */
+    onRefresh: (() -> Unit)? = null,
 ) {
     if (songs.isEmpty()) return
     SaltCard(modifier) {
-        SectionHeader(title, onMore)
+        SectionHeader(title, onMore, onRefresh)
         Column(Modifier.fillMaxWidth().padding(start = 10.dp, end = 10.dp, bottom = 6.dp)) {
             songs.forEachIndexed { index, song ->
                 val globalIndex = allSongs.indexOfFirst { it.hash == song.hash && it.hash.isNotBlank() }
@@ -113,7 +115,7 @@ fun AlbumSectionCard(
 
 /** 区块标题行：左侧标题，右侧 `›` 进详情。 */
 @Composable
-private fun SectionHeader(title: String, onMore: () -> Unit) {
+private fun SectionHeader(title: String, onMore: () -> Unit, onRefresh: (() -> Unit)? = null) {
     Row(
         Modifier
             .fillMaxWidth()
@@ -122,11 +124,23 @@ private fun SectionHeader(title: String, onMore: () -> Unit) {
         horizontalArrangement = Arrangement.SpaceBetween,
     ) {
         Text3(title, color = KugouTheme.colors.text)
-        Text3(
-            text = "›",
-            color = KugouTheme.colors.muted,
-            modifier = Modifier.clickable { onMore() },
-        )
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            // 手动刷新（用户需求：刷歌推荐无法手动刷新）；null = 该区块不提供
+            if (onRefresh != null) {
+                Text3(
+                    text = "↻",
+                    color = KugouTheme.colors.muted,
+                    modifier = Modifier
+                        .clickable { onRefresh() }
+                        .padding(end = 10.dp),
+                )
+            }
+            Text3(
+                text = "›",
+                color = KugouTheme.colors.muted,
+                modifier = Modifier.clickable { onMore() },
+            )
+        }
     }
 }
 

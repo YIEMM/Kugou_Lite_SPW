@@ -1241,7 +1241,10 @@ object KugouApi {
      */
     private fun parseSong(item: Any?): Song? {        val obj = JsonLite.asObject(item) ?: return null
 
-        val hash = firstString(obj, "FileHash", "hash", "File_hash", "filehash").orEmpty()
+        // hash_128：刷歌推荐（/home/discover）song_info 的 hash 字段名。
+        // 早期只找 hash/FileHash → Song.hash 空 → 歌词 key 回退 album_audio_id →
+        // /search/lyric 对 album_audio_id 404 → 整个区块点歌没有歌词（取流不受影响）。
+        val hash = firstString(obj, "FileHash", "hash", "File_hash", "filehash", "hash_128").orEmpty()
         val albumAudioId = firstString(
             obj,
             "album_audio_id",
