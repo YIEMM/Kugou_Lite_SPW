@@ -2,6 +2,7 @@ package cn.spw.kugou.lite.ui
 
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import kotlinx.coroutines.delay
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -152,14 +153,26 @@ private fun sha1Hex(text: String): String =
 /**
  * 记住一张封面并在加载完成后自动重组。
  *
+ * ## 限流（用户需求 2026-11-21）
+ *
+ * 列表封面下载受 [CoverRateLimiter] 全局限流：视图范围内 6 次/秒、
+ * 视图范围外 2 次/秒。配额耗尽时协程 delay 到窗口滑出再重试——
+ * 协程挂起不占线程，也不丢请求（滚动到远处再滚回来，封面最终都会加载）。
+ *
  * @param url 封面地址；为空时直接返回 null
+ * @param visible 该行当前是否在视图范围内（列表项按可见性传入）
  */
 @Composable
-fun rememberCover(url: String?): ImageBitmap? {
+fun rememberCover(url: String?, visible: Boolean = true): ImageBitmap? {
     if (url.isNullOrBlank()) return null
     var bitmap by remember(url) { mutableStateOf(CoverLoader.cached(url)) }
-    LaunchedEffect(url) {
+    LaunchedEffect(url, visible) {
         if (bitmap == null) {
+            // 配额耗尽时先取延迟再挂起等待，窗口滑出后自动放行；
+            // 失败（null）直接退出——失败封面不无限重试打爆限流配额。
+            while (!CoverRateLimiter.tryAcquire(visible)) {
+                delay(CoverRateLimiter.retryDelayMs(visible).coerceAtLeast(50L))
+            }
             CoverLoader.load(url) { bmp -> bitmap = bmp }
         }
     }
