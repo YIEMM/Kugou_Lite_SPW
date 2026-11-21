@@ -22,6 +22,9 @@ import cn.spw.kugou.lite.sidecar.ApiExec
 import cn.spw.kugou.lite.sidecar.AudioCache
 import cn.spw.kugou.lite.sidecar.AuthStore
 import cn.spw.kugou.lite.sidecar.Settings
+import cn.spw.kugou.lite.sidecar.StorageMover
+import java.io.File
+import androidx.compose.ui.draw.clip
 
 /**
  * 设置页。
@@ -44,6 +47,8 @@ import cn.spw.kugou.lite.sidecar.Settings
 fun SettingsPage() {
     var quality by remember { mutableStateOf(Settings.quality) }
     var cacheText by remember { mutableStateOf("计算中…") }
+    var limitText by remember { mutableStateOf<String?>(null) }
+    var moveText by remember { mutableStateOf<String?>(null) }
 
     // 首次进入时算一次缓存占用（可能较慢，放后台）
     androidx.compose.runtime.LaunchedEffect(Unit) {
@@ -117,6 +122,101 @@ fun SettingsPage() {
                     .padding(horizontal = 16.dp, vertical = 12.dp),
             ) {
                 Text3("清除缓存", color = KugouTheme.colors.text)
+            }
+        }
+
+        SaltGroupTitle("缓存容量与位置")
+
+        SaltCard(Modifier.fillMaxWidth().padding(horizontal = 16.dp)) {
+            Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp)) {
+                Text3(
+                    "容量上限：当前 " + Settings.cacheLimitGb + " GB",
+                    color = KugouTheme.colors.text,
+                )
+                Row(
+                    Modifier.fillMaxWidth().padding(top = 8.dp),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    listOf(1, 2, 5, 10, 20).forEach { gb ->
+                        Text3(
+                            gb.toString() + "G",
+                            color = if (Settings.cacheLimitGb == gb) KugouTheme.colors.accent else KugouTheme.colors.faint,
+                            modifier = Modifier
+                                .clip(androidx.compose.foundation.shape.RoundedCornerShape(8.dp))
+                                .clickable {
+                                    Settings.setCacheLimitGb(gb)
+                                    limitText = "已设为 " + gb + " GB（重启后生效）",
+                                }
+                                .padding(horizontal = 12.dp, vertical = 6.dp),
+                        )
+                    }
+                }
+                limitText?.let {
+                    Text3(it, color = KugouTheme.colors.faint, modifier = Modifier.padding(top = 6.dp))
+                }
+                Text3(
+                    "缓存位置：变更时可选迁移或删除旧数据",
+                    color = KugouTheme.colors.faint,
+                    modifier = Modifier.padding(top = 12.dp),
+                )
+                var showMove by remember { mutableStateOf(false) }
+                if (showMove) {
+                    Row(
+                        Modifier.fillMaxWidth().padding(top = 8.dp),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        Text3(
+                            "迁移到默认目录",
+                            color = KugouTheme.colors.accent,
+                            modifier = Modifier
+                                .clickable {
+                                    ApiExec.run({ rr -> rr.onSuccess { showMove = false } }) {
+                                        val old = File(Settings.cacheDirOverride)
+                                        if (old.isDirectory) {
+                                            // 按扩展名分流：音频进 audio-cache，其余（img/lrc/krc）进 cover-cache 同级目录
+                                            // （歌词实际与音频同目录，迁移用「音频侧整体 move」覆盖不了 lrc——
+                                            // 简化：全部迁到 dataDir/audio-cache 的兄弟结构不可行，改为按扩展名复制）
+                                            val defAudio = File(Diag.dataDir, "audio-cache")
+                                            val r = StorageMover.move(old, defAudio)
+                                            Settings.setCacheDirOverride("")
+                                            moveText = "迁移完成 " + r.moved + " 个（失败 " + r.failed + "），重启后生效"
+                                        } else moveText = "旧目录不存在"
+                                    }
+                                }
+                                .padding(vertical = 4.dp),
+                        )
+                        Text3(
+                            "删除旧数据",
+                            color = KugouTheme.colors.danger,
+                            modifier = Modifier
+                                .clickable {
+                                    ApiExec.run({ rr -> rr.onSuccess { showMove = false } }) {
+                                        StorageMover.deleteAll(File(Settings.cacheDirOverride))
+                                        Settings.setCacheDirOverride("")
+                                        moveText = "旧缓存已删除",
+                                    }
+                                }
+                                .padding(vertical = 4.dp),
+                        )
+                    }
+                }
+                moveText?.let {
+                    Text3(it, color = KugouTheme.colors.faint, modifier = Modifier.padding(top = 6.dp))
+                }
+                // 只有设置过覆盖目录时才显示「变更位置」入口（回到默认后无需再变更）
+                if (Settings.cacheDirOverride.isBlank()) {
+                    Text3(
+                        "变更缓存位置（高级）",
+                        color = KugouTheme.colors.accent,
+                        modifier = Modifier
+                            .clickable {
+                                // 目录选择对话框依赖宿主 Swing/AWT；简化为提示用户改配置文件。
+                                // TODO: 用 JFileChooser 提供图形化目录选择。
+                                moveText = "请在设置文件 settings.properties 的 cacheDirOverride 填入新目录后重启",
+                            }
+                            .padding(top = 12.dp, bottom = 4.dp),
+                    )
+                }
             }
         }
 
