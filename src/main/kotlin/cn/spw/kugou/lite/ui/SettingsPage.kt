@@ -145,7 +145,7 @@ fun SettingsPage() {
                                 .clip(androidx.compose.foundation.shape.RoundedCornerShape(8.dp))
                                 .clickable {
                                     Settings.setCacheLimitGb(gb)
-                                    limitText = "已设为 " + gb + " GB（重启后生效）",
+                                    limitText = "已设为 " + gb + " GB（重启后生效）"
                                 }
                                 .padding(horizontal = 12.dp, vertical = 6.dp),
                         )
@@ -193,7 +193,7 @@ fun SettingsPage() {
                                     ApiExec.run({ rr -> rr.onSuccess { showMove = false } }) {
                                         StorageMover.deleteAll(File(Settings.cacheDirOverride))
                                         Settings.setCacheDirOverride("")
-                                        moveText = "旧缓存已删除",
+                                        moveText = "旧缓存已删除"
                                     }
                                 }
                                 .padding(vertical = 4.dp),
@@ -212,7 +212,7 @@ fun SettingsPage() {
                             .clickable {
                                 // 目录选择对话框依赖宿主 Swing/AWT；简化为提示用户改配置文件。
                                 // TODO: 用 JFileChooser 提供图形化目录选择。
-                                moveText = "请在设置文件 settings.properties 的 cacheDirOverride 填入新目录后重启",
+                                moveText = "请在设置文件 settings.properties 的 cacheDirOverride 填入新目录后重启"
                             }
                             .padding(top = 12.dp, bottom = 4.dp),
                     )

@@ -170,8 +170,8 @@ fun rememberCover(url: String?, visible: Boolean = true): ImageBitmap? {
         if (bitmap == null) {
             // 配额耗尽时先取延迟再挂起等待，窗口滑出后自动放行；
             // 失败（null）直接退出——失败封面不无限重试打爆限流配额。
-            while (!CoverRateLimiter.tryAcquire(visible)) {
-                delay(CoverRateLimiter.retryDelayMs(visible).coerceAtLeast(50L))
+            while (!CoverRateLimiter.DEFAULT.tryAcquire(visible)) {
+                delay(CoverRateLimiter.DEFAULT.retryDelayMs(visible).coerceAtLeast(50L))
             }
             CoverLoader.load(url) { bmp -> bitmap = bmp }
         }

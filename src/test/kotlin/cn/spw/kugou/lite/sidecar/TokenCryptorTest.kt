@@ -18,7 +18,7 @@ class TokenCryptorTest {
     fun roundtripRestoresPlaintext(@TempDir dir: File) {
         val c = TokenCryptor(dir)
         val secret = "kugou-token-abc-123-中文-🔥"
-        val enc = c.encrypt(secret)
+        val enc = c.encrypt(secret)!!
         assertNotEquals(secret, enc)
         assertEquals(secret, c.decrypt(enc))
     }
@@ -27,7 +27,7 @@ class TokenCryptorTest {
     @Test
     fun ciphertextHidesPlaintext(@TempDir dir: File) {
         val c = TokenCryptor(dir)
-        val enc = c.encrypt("SUPER-SECRET-TOKEN")
+        val enc = c.encrypt("SUPER-SECRET-TOKEN")!!
         assertFalse(enc.contains("SUPER"))
         assertFalse(enc.contains("SECRET"))
     }
@@ -36,8 +36,8 @@ class TokenCryptorTest {
     @Test
     fun differentIvEachTime(@TempDir dir: File) {
         val c = TokenCryptor(dir)
-        val e1 = c.encrypt("same-input")
-        val e2 = c.encrypt("same-input")
+        val e1 = c.encrypt("same-input")!!
+        val e2 = c.encrypt("same-input")!!
         assertNotEquals(e1, e2)
         assertEquals("same-input", c.decrypt(e1))
         assertEquals("same-input", c.decrypt(e2))
@@ -47,7 +47,7 @@ class TokenCryptorTest {
     @Test
     fun keyFileStableAcrossInstances(@TempDir dir: File) {
         val c1 = TokenCryptor(dir)
-        val enc = c1.encrypt("persisted")
+        val enc = c1.encrypt("persisted")!!
         val c2 = TokenCryptor(dir)
         assertEquals("persisted", c2.decrypt(enc))
         val keyFile = File(dir, "token.key")
@@ -62,14 +62,14 @@ class TokenCryptorTest {
         val enc = c1.encrypt("will-fail")
         File(dir, "token.key").writeBytes(ByteArray(32))
         val c2 = TokenCryptor(dir)
-        assertEquals(null, c2.decrypt(enc))
+        assertEquals(null, c2.decrypt(enc!!))
     }
 
     /** 篡改密文解密失败返回 null（GCM 认证拒绝）。 */
     @Test
     fun tamperedCiphertextRejected(@TempDir dir: File) {
         val c = TokenCryptor(dir)
-        val enc = c.encrypt("integrity-matters")
+        val enc = c.encrypt("integrity-matters")!!
         val bytes = java.util.Base64.getDecoder().decode(enc)
         bytes[bytes.size - 1] = (bytes[bytes.size - 1].toInt() xor 0x01).toByte()
         assertEquals(null, c.decrypt(java.util.Base64.getEncoder().encodeToString(bytes)))
