@@ -134,6 +134,9 @@ val generateBuildInfo = tasks.register("generateBuildInfo") {
 
     val outDir = layout.buildDirectory.dir("generated/buildinfo")
     outputs.dir(outDir)
+    // 为什么禁用 up-to-date：commit 哈希无法表达为 gradle 输入（HEAD 变化不改变任何文件），
+    // 缓存会把旧 commit 打进 spmod（真机教训：历史重写后关于页仍显示旧 45fe12）。
+    outputs.upToDateWhen { false }
 
     doLast {
         fun git(vararg args: String): String = try {
