@@ -77,5 +77,29 @@ class ObfClassResolverTest {
         // 键是 包.类.函数（Text.Text.Text），按 包.类 + 函数名 查询
         assertEquals("obfS", ObfClassResolver.resolve(i, "com.moriafly.salt.ui.Text.Text", "Text"))
     }
-}
 
+    /** 多声明但混淆类名相同（R8 同类重载）：应返回该类名而不是拒绝。 */
+    @Test
+    fun sameClassMultiDeclsReturnClass() {
+        val decls = listOf(
+            HostTargets.Decl(
+                obfClass = "obfSame",
+                obfMethod = "m1",
+                descriptor = "(Landroidx/compose/runtime/Composer;II)V",
+                original = "com.moriafly.salt.ui.Text.Text",
+                source = "Text.kt:1",
+                line = 1,
+            ),
+            HostTargets.Decl(
+                obfClass = "obfSame",
+                obfMethod = "m2",
+                descriptor = "(Landroidx/compose/runtime/Composer;IIII)V",
+                original = "com.moriafly.salt.ui.Text.Text",
+                source = "Text.kt:9",
+                line = 9,
+            ),
+        )
+        val i = HostTargets.Index(File("fake"), decls, emptyList())
+        assertEquals("obfSame", ObfClassResolver.resolve(i, "com.moriafly.salt.ui.Text", "Text"))
+    }
+}

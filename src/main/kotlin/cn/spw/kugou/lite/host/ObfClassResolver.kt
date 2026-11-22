@@ -51,10 +51,13 @@ object ObfClassResolver {
             perIndex[cacheKey] = ""
             return null
         }
-        // 唯一性：多个声明说明检索特征不够，宁可失败（调用方有日志降级）
-        val obf = if (decls.size == 1) decls[0].obfClass
+        // 多声明处理：R8 会把同一源文件的同名 @Composable 重载全部重命名到同一个混淆类，
+        // 此时各声明的 obfClass 必然相同——取它就是正确的类名（我们要的只是类名）。
+        // 只有 obfClass 互相不同（真歧义）才拒绝。
+        val distinctClasses = decls.map { it.obfClass }.distinct()
+        val obf = if (distinctClasses.size == 1) distinctClasses[0]
         else throw IllegalStateException(
-            originalFullName + "#" + functionName + " 有 " + decls.size + " 个声明，无法唯一定位；候选：" + decls.map { it.obfClass }
+            originalFullName + "#" + functionName + " 有 " + decls.size + " 个声明且类名不同，无法唯一定位；候选：" + distinctClasses
         )
         perIndex[cacheKey] = obf
         return obf

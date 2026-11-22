@@ -101,16 +101,16 @@ internal object HostSalt {
     // ------------------------------------------------------------------
 
     /** SaltUI `Text`：`com.moriafly.salt.ui.Text.Text`，`Text.kt:101`。 */
-    private val TEXT_CLASS: String get() = obf("com.moriafly.salt.ui.Text.Text", "Text", "androidx.compose.ui.")
+    private val TEXT_CLASS: String get() = obf("com.moriafly.salt.ui.Text", "Text", "androidx.compose.ui.")
 
     /** SaltUI `Card`：`com.moriafly.salt.ui.Card.Card`，`Card.kt:57`。 */
-    private val CARD_CLASS: String get() = obf("com.moriafly.salt.ui.Card.Card", "Card", "androidx.compose.ui.")
+    private val CARD_CLASS: String get() = obf("com.moriafly.salt.ui.Card", "Card", "androidx.compose.ui.")
 
     /** SaltUI `Item`：`com.moriafly.salt.ui.Item.Item`，`Item.kt:209`。 */
-    private val ITEM_CLASS: String get() = obf("com.moriafly.salt.ui.Item.Item", "Item", "androidx.compose.ui.")
+    private val ITEM_CLASS: String get() = obf("com.moriafly.salt.ui.Item", "Item", "androidx.compose.ui.")
 
     /** SaltUI `ItemOuterTitle`：`com.moriafly.salt.ui.ItemOuterTitle`，`ItemOuter.kt:44`。 */
-    private val OUTER_CLASS: String get() = obf("com.moriafly.salt.ui.ItemOuterTitle.ItemOuterTitle", "ItemOuterTitle", "androidx.compose.ui.")
+    private val OUTER_CLASS: String get() = obf("com.moriafly.salt.ui.ItemOuterTitle", "ItemOuterTitle", "androidx.compose.ui.")
 
     /**
      * 宿主二级页面外框 `com.xuncorp.voxzen.ui.screen.BasicScreenColumn`（`BasicScreen.kt:83`）。
@@ -119,10 +119,10 @@ internal object HostSalt {
      * 该类里有 `Function3` / `Function4` 两个公有重载，**只有 `Function3` 那条路径带
      * 滚动容器**，见下方 [screen] 的说明。
      */
-    private val SCREEN_CLASS: String get() = obf("com.xuncorp.voxzen.ui.screen.BasicScreenColumn.BasicScreenColumn", "BasicScreenColumn", "androidx.compose.ui.")
+    private val SCREEN_CLASS: String get() = obf("com.xuncorp.voxzen.ui.screen.BasicScreenColumn", "BasicScreenColumn", "androidx.compose.ui.")
 
     /** 宿主 `BasicCaptionButton`：`com.xuncorp.voxzen.ui.component.BasicCaptionButton`。 */
-    private val CAPTION_CLASS: String get() = obf("com.xuncorp.voxzen.ui.component.BasicCaptionButton.BasicCaptionButton", "BasicCaptionButton", "com.xuncorp.voxzen.ui.component.")
+    private val CAPTION_CLASS: String get() = obf("com.xuncorp.voxzen.ui.component.BasicCaptionButton", "BasicCaptionButton", "com.xuncorp.voxzen.ui.component.")
 
     /**
      * 宿主二级页左上角的返回按钮 `com.xuncorp.voxzen.ui.screen.BasicScreenBackButton`
@@ -132,7 +132,7 @@ internal object HostSalt {
      * 无 enabled，是一个纯粹的图标按钮。宿主 `BasicScreen` 的 `onBack` 槽位要的就是
      * 它的 composable 实例（`Function2<Composer, Integer, Unit>`）。
      */
-    private val BACK_CLASS: String get() = obf("com.xuncorp.voxzen.ui.screen.BasicScreenBackButton.BackButton", "BackButton", "androidx.compose.ui.")
+    private val BACK_CLASS: String get() = obf("com.xuncorp.voxzen.ui.screen.BasicScreenBackButton", "BasicScreenBackButton", "androidx.compose.ui.")
 
     /**
      * 动态反查混淆类名。Decls 扫描记录的 obfClass 是完整二进制类名（含 R8 重排后的包路径），
@@ -142,8 +142,14 @@ internal object HostSalt {
      * 解析失败抛 IllegalStateException，由 validate/isAvailable 捕获降级（R22）。
      */
     private fun obf(originalFullName: String, functionName: String, packagePrefix: String): String {
-        val resolved = ObfClassResolver.resolve(HostTargets.index(HostTargets::class.java), originalFullName, functionName)
-            ?: throw IllegalStateException("混淆类名解析失败：$originalFullName（宿主版本可能已变更）")
+        val idx = HostTargets.index(HostTargets::class.java)
+        val resolved = ObfClassResolver.resolve(idx, originalFullName, functionName)
+            ?: throw IllegalStateException(
+                "混淆类名解析失败：$originalFullName。诊断：" + HostTargets.explain(idx, originalFullName, functionName)
+                    + "；相关键样例：" + idx.byOriginal.keys
+                        .filter { it.contains(originalFullName.substringBeforeLast(".")) }
+                        .take(5)
+            )
         if (!resolved.startsWith(packagePrefix)) {
             Diag.warn("[$TAG] 解析出的类 $resolved 不在预期包 $packagePrefix 下（R8 包路径漂移，继续使用）")
         }
