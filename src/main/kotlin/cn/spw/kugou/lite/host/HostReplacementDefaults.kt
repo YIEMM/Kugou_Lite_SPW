@@ -141,14 +141,17 @@ internal object HostReplacementDefaults {
             "Unexpected Compose default-mask layout: " + current + " vs " + expected
         }
 
-        // TRANSFORMER_TYPE（R20）：getTransformer 返回的 Method 的**声明类**就是 transformer 基类——
-        // 早期写死其混淆名（基类 U+037F），宿主重新混淆即失效。
-        val getTransformer = methods.singleOrNull {
-            it.parameterCount == 0 && it.returnType == target.declaringClass
-        } ?: throw IllegalStateException("site 无返回 transformer 基类的方法: " + type.name)
-        val setTransformer = methods.singleOrNull {
-            it.parameterCount == 1 && it.parameterTypes[0] == target.declaringClass
-        } ?: throw IllegalStateException("site 无收 transformer 基类的 setter: " + type.name)
+        // TRANSFORMER_TYPE（R20）：不再与 target 关联（getTransformer 返回的是 transformer
+        // 的基类而非实现类，写死或推导都脆弱）。改用天然不变特征：get/set 是一对，
+        // getter 的返回类型 == setter 的参数类型。唯一化后取该类型。
+        val getCandidates = methods.filter { it.parameterCount == 0 && it.returnType.name.startsWith("com.xuncorp") }
+        val getTransformer = getCandidates.singleOrNull { getter ->
+            methods.any { it.parameterCount == 1 && it.parameterTypes[0] == getter.returnType }
+        } ?: throw IllegalStateException("site 无 get/set transformer 方法对: " + type.name)
+        val transformerType = getTransformer.returnType
+        val setTransformer = methods.single {
+            it.parameterCount == 1 && it.parameterTypes[0] == transformerType
+        }
 
         val priorRange = current
         val priorTransformer = getTransformer.invoke(site)
