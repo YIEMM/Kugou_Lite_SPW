@@ -3,10 +3,12 @@ package cn.spw.kugou.lite.ui
 import java.util.Locale
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.width
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -155,7 +157,56 @@ fun SettingsPage() {
                 limitText?.let {
                     Text3(it, color = KugouTheme.colors.faint, modifier = Modifier.padding(top = 6.dp))
                 }
-                // 封面请求限流（用户需求：可在设置中调整）
+                // 自定义输入（用户需求：设置内容更加自定义——快捷档之外支持任意值）
+                var showLimitInput by remember { mutableStateOf(false) }
+                var limitInput by remember { mutableStateOf("") }
+                Text3(
+                    "自定义容量…",
+                    color = KugouTheme.colors.accent,
+                    modifier = Modifier
+                        .padding(top = 6.dp)
+                        .clickable { showLimitInput = !showLimitInput; limitInput = "" },
+                )
+                if (showLimitInput) {
+                    Row(
+                        Modifier.fillMaxWidth().padding(top = 6.dp),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        androidx.compose.foundation.text.BasicTextField(
+                            value = limitInput,
+                            onValueChange = { limitInput = it },
+                            textStyle = androidx.compose.ui.text.TextStyle(color = KugouTheme.colors.text),
+                            modifier = Modifier
+                                .clip(androidx.compose.foundation.shape.RoundedCornerShape(6.dp))
+                                .padding(horizontal = 10.dp, vertical = 6.dp)
+                                .width(120.dp),
+                            decorationBox = { inner ->
+                                androidx.compose.foundation.layout.Box {
+                                    if (limitInput.isEmpty()) Text3("1~100 的整数", color = KugouTheme.colors.faint)
+                                    inner()
+                                }
+                            },
+                        )
+                        Text3(
+                            "应用",
+                            color = KugouTheme.colors.accent,
+                            modifier = Modifier.clickable {
+                                val v = parseCacheLimitGb(limitInput)
+                                if (v == null) {
+                                    limitText = "输入无效：请输入 1~100 的整数"
+                                } else {
+                                    Settings.setCacheLimitGb(v)
+                                    limitText = "已设为 " + v + " GB（重启后生效）"
+                                }
+                            },
+                        )
+                    }
+                }
+                // 封面请求限流（用户需求：可在设置中调整；自定义支持任意 1~20）
+                var rateInputMode by remember { mutableStateOf(false) }
+                var rateInput by remember { mutableStateOf("") }
+                var rateInputInv by remember { mutableStateOf("") }
                 Text3(
                     "封面限流：视图内 " + Settings.coverRateVisible + " / 视图外 " + Settings.coverRateInvisible + " 每秒",
                     color = KugouTheme.colors.text,
@@ -175,7 +226,66 @@ fun SettingsPage() {
                                 .padding(horizontal = 10.dp, vertical = 6.dp),
                         )
                     }
-                    Text3("视图外固定 2", color = KugouTheme.colors.faint, modifier = Modifier.padding(vertical = 6.dp))
+                    Text3(
+                        "自定义…",
+                        color = KugouTheme.colors.accent,
+                        modifier = Modifier
+                            .clickable { rateInputMode = !rateInputMode; rateInput = "" }
+                            .padding(vertical = 6.dp),
+                    )
+                }
+                if (rateInputMode) {
+                    Row(
+                        Modifier.fillMaxWidth().padding(top = 6.dp),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        androidx.compose.foundation.text.BasicTextField(
+                            value = rateInput,
+                            onValueChange = { rateInput = it },
+                            textStyle = androidx.compose.ui.text.TextStyle(color = KugouTheme.colors.text),
+                            modifier = Modifier
+                                .clip(androidx.compose.foundation.shape.RoundedCornerShape(6.dp))
+                                .padding(horizontal = 10.dp, vertical = 6.dp)
+                                .width(60.dp),
+                            decorationBox = { inner ->
+                                androidx.compose.foundation.layout.Box {
+                                    if (rateInput.isEmpty()) Text3("视图内 1~20", color = KugouTheme.colors.faint)
+                                    inner()
+                                }
+                            },
+                        )
+                        Text3("视图外", color = KugouTheme.colors.faint, modifier = Modifier.padding(vertical = 6.dp))
+                        androidx.compose.foundation.text.BasicTextField(
+                            value = rateInputInv,
+                            onValueChange = { rateInputInv = it },
+                            textStyle = androidx.compose.ui.text.TextStyle(color = KugouTheme.colors.text),
+                            modifier = Modifier
+                                .clip(androidx.compose.foundation.shape.RoundedCornerShape(6.dp))
+                                .padding(horizontal = 10.dp, vertical = 6.dp)
+                                .width(60.dp),
+                            decorationBox = { inner ->
+                                androidx.compose.foundation.layout.Box {
+                                    if (rateInputInv.isEmpty()) Text3("1~20", color = KugouTheme.colors.faint)
+                                    inner()
+                                }
+                            },
+                        )
+                        Text3(
+                            "应用",
+                            color = KugouTheme.colors.accent,
+                            modifier = Modifier.clickable {
+                                val vin = parseCoverRate(rateInput)
+                                val vinv = parseCoverRate(rateInputInv)
+                                if (vin == null || vinv == null) {
+                                    rateText = "输入无效：请输入 1~20 的整数"
+                                } else {
+                                    Settings.setCoverRate(vin, vinv)
+                                    rateText = "已设为 视图内 " + vin + " / 视图外 " + vinv
+                                }
+                            },
+                        )
+                    }
                 }
                 rateText?.let {
                     Text3(it, color = KugouTheme.colors.faint, modifier = Modifier.padding(top = 6.dp))
